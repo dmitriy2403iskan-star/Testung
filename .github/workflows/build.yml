@@ -40,7 +40,16 @@ jobs:
           echo 'export/android/debug_keystore_user = "androiddebugkey"' >> $S
           echo 'export/android/debug_keystore_pass = "android"' >> $S
           echo 'export/android/force_system_user = false' >> $S
-          [ -n "$JAVA_HOME" ] && echo "export/android/java_sdk_path = \"$JAVA_HOME\"" >> $S || true
+          J="$JAVA_HOME"
+          if [ -z "$J" ] || [ ! -x "$J/bin/javac" ]; then
+            J=$(dirname "$(dirname "$(readlink -f "$(which javac)")")")
+          fi
+          if [ ! -x "$J/bin/javac" ]; then
+            J=$(ls -d /usr/lib/jvm/*/ 2>/dev/null | while read d; do [ -x "$d/bin/javac" ] && echo "${d%/}" && break; done)
+          fi
+          echo "Java SDK path: $J"
+          [ -x "$J/bin/javac" ] || { echo "::error::Java JDK не найден"; exit 1; }
+          echo "export/android/java_sdk_path = \"$J\"" >> $S
           echo 'export/android/shutdown_adb_on_exit = true' >> $S
       - name: Export APK
         run: |
