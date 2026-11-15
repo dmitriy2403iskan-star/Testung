@@ -51,7 +51,7 @@ func _load() -> void:
     llm.model_path = ProjectSettings.globalize_path(MODEL)
     llm.n_predict = 80
     if "should_output_prompt" in llm:
-        llm.should_output_prompt = false
+        llm.should_output_prompt = false  # иначе в ответ попадает весь промпт и JSON не парсится
     add_child(llm)
     llm.generate_text_finished.connect(_on_done)
     llm_ready = true

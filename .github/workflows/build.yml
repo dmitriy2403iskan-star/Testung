@@ -54,8 +54,14 @@ jobs:
       - name: Export APK
         run: |
           mkdir -p build
+          echo "--- diagnostics ---"
+          ls /usr/lib/android-sdk /usr/lib/android-sdk/build-tools /usr/lib/android-sdk/platforms 2>&1 || true
+          ls ~/.local/share/godot/export_templates/ ~/.local/share/godot/export_templates/* 2>&1 | head -20 || true
+          grep "export/android" ~/.config/godot/editor_settings-4.tres || true
+          ls -la /root/debug.keystore || true
+          echo "------------------"
           godot --headless --import || true
-          godot --headless --export-debug "Android" build/komandir.apk
+          godot --headless --verbose --export-debug "Android" build/komandir.apk
       - uses: actions/upload-artifact@v4
         with:
           name: komandir-apk
