@@ -14,7 +14,7 @@ const GOAL_SCHEMA := '{"type":"object","properties":{"goal":{"type":"string","en
 const ITEMS := {"рпг": "rpg", "гранатомет": "rpg", "патрон": "ammo", "аптеч": "medkit"}
 
 var llm = null
-var ready := false
+var llm_ready := false
 var busy := false
 var queue: Array = []
 var cur = null
@@ -52,12 +52,12 @@ func _load() -> void:
     llm.n_predict = 80
     add_child(llm)
     llm.generate_text_finished.connect(_on_done)
-    ready = true
+    llm_ready = true
     _st("Нейронка загружена.")
 
 func _process(_d: float) -> void:
     var now := Time.get_ticks_msec()
-    if http and not ready and now - last_report > 8000 and http.get_body_size() > 0:
+    if http and not llm_ready and now - last_report > 8000 and http.get_body_size() > 0:
         last_report = now
         _st("Модель: %d%%" % (100 * http.get_downloaded_bytes() / http.get_body_size()))
     if busy and now - t0 > 60000:
@@ -71,7 +71,7 @@ func _process(_d: float) -> void:
         _next()
 
 func think(sol, text: String, tgt: int, use_llm: bool) -> void:
-    if ready and use_llm:
+    if llm_ready and use_llm:
         queue.append({"s": sol, "t": text, "g": tgt})
         _next()
     else:
@@ -104,7 +104,7 @@ func _on_done(text: String) -> void:
     _next()
 
 func _prompt(sol, text: String, tgt: int) -> String:
-    var sys := "Ты — солдат №%d украинской армии, живой человек, а не робот. Говори коротко, по-солдатски, по-русски. " % sol.id
+    var sys: String = "Ты — солдат №%d украинской армии, живой человек, а не робот. Говори коротко, по-солдатски, по-русски. " % sol.id
     sys += "Выбери одно действие: idle, move_to, pick_up, shoot, attention, clean. "
     sys += "target: rpg, ammo, medkit или номер солдата цифрой, иначе пусто. say: одна короткая реплика. "
     sys += "Если приказа нет, а рядом полезное снаряжение — можешь взять его (pick_up)."
@@ -140,14 +140,14 @@ func _st(t: String) -> void:
     status.emit(t)
 
 func ask_goal(text: String) -> void:
-    if ready:
+    if llm_ready:
         queue.append({"s": null, "t": text, "g": 0, "kind": "goal"})
         _next()
     else:
         goal_ready.emit(goal_rules(text))
 
 func _goal_prompt(text: String) -> String:
-    var sys := "Определи цель тренировки человека-солдата по приказу. walk — ходить, jump — прыгать, fly — летать, stand — стоять."
+    var sys: String = "Определи цель тренировки человека-солдата по приказу. walk — ходить, jump — прыгать, fly — летать, stand — стоять."
     return "<|im_start|>system\n%s<|im_end|>\n<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n" % [sys, text]
 
 func goal_rules(text: String) -> String:
