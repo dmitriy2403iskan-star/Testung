@@ -50,6 +50,8 @@ func _load() -> void:
     llm = ClassDB.instantiate("GDLlama")
     llm.model_path = ProjectSettings.globalize_path(MODEL)
     llm.n_predict = 80
+    if "should_output_prompt" in llm:
+        llm.should_output_prompt = false
     add_child(llm)
     llm.generate_text_finished.connect(_on_done)
     llm_ready = true
@@ -147,7 +149,7 @@ func ask_goal(text: String) -> void:
         goal_ready.emit(goal_rules(text))
 
 func _goal_prompt(text: String) -> String:
-    var sys: String = "Определи цель тренировки человека-солдата по приказу. walk — ходить, jump — прыгать, fly — летать, stand — стоять."
+    var sys := "Определи цель тренировки человека-солдата по приказу. walk — ходить, jump — прыгать, fly — летать, stand — стоять."
     return "<|im_start|>system\n%s<|im_end|>\n<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n" % [sys, text]
 
 func goal_rules(text: String) -> String:

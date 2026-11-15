@@ -145,7 +145,7 @@ func parse(text: String) -> Dictionary:
     r.compile("[а-яёa-z0-9]+")
     var toks: Array = []
     for m in r.search_all(text.to_lower()):
-        var w := m.get_string()
+        var w: String = m.get_string()
         if w in ["номер", "солдат", "боец", "рядовой"]:
             continue
         toks.append(_num(w))
