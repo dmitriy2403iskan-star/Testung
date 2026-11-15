@@ -9,13 +9,6 @@ jobs:
     container: barichello/godot-ci:4.2.2
     steps:
       - uses: actions/checkout@v4
-      - name: Add godot-llm addon
-        run: |
-          which git || (apt-get update -qq && apt-get install -y -qq git)
-          git clone --depth 1 https://github.com/Adriankhl/godot-llm-template tpl
-          d=$(dirname "$(find tpl -name godot_llm.gdextension | head -1)")
-          mkdir -p addons && cp -r "$d" addons/godot_llm
-          ls addons/godot_llm
       - name: Setup Godot + Android
         run: |
           mkdir -p ~/.local/share/godot/export_templates ~/.config/godot
