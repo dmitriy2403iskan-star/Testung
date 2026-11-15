@@ -18,6 +18,8 @@ jobs:
           godot --headless --quiet --editor --quit || true
           S=~/.config/godot/editor_settings-4.tres
           echo 'export/android/android_sdk_path = "/usr/lib/android-sdk"' >> $S
+          JAVA_HOME="$(dirname "$(dirname "$(readlink -f "$(command -v java)")")")"
+          echo "export/android/java_sdk_path = \"$JAVA_HOME\"" >> "$S"
           echo 'export/android/debug_keystore = "/root/debug.keystore"' >> $S
           echo 'export/android/debug_keystore_user = "androiddebugkey"' >> $S
           echo 'export/android/debug_keystore_pass = "android"' >> $S
