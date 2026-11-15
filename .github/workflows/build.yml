@@ -4,29 +4,69 @@ on:
     branches: [main]
   workflow_dispatch:
 jobs:
+  llm:
+    # Собираем нейронку (godot-llm / llama.cpp) под Android arm64 по рецепту из CI самого аддона
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r26d
+          link-to-sdk: true
+      - name: Clone godot-llm
+        run: |
+          git clone https://github.com/Adriankhl/godot-llm llm
+          cd llm
+          git checkout fb12d7d9c0ff6274bb6c5267e86004482befc842
+          git submodule update --init --recursive
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential ninja-build
+      - name: Build Android library
+        working-directory: llm
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          mkdir build
+          cd build
+          cmake .. --preset android-cpu-release
+          ninja -j $(nproc)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-llm-lib
+          path: llm/build/libgodot_llm.android.release.aarch64.so
+          if-no-files-found: error
+
   apk:
+    needs: llm
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     container: barichello/godot-ci:4.2.2
     steps:
       - uses: actions/checkout@v4
       - name: Add godot-llm addon
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: android-llm-lib
+          path: addons/godot_llm/bin
+      - name: Write gdextension
         run: |
-          which git || (apt-get update -qq && apt-get install -y -qq git)
-          # Не критично: если аддон не скачался, APK всё равно соберётся (солдаты на правилах)
-          if git clone --depth 1 https://github.com/Adriankhl/godot-llm-template tpl; then
-            f=$(find tpl -name godot_llm.gdextension | head -1)
-            if [ -n "$f" ]; then
-              mkdir -p addons
-              cp -r "$(dirname "$f")" addons/godot_llm
-              echo "Addon files:"; find addons/godot_llm -type f | head -50
-            else
-              echo "::warning::godot_llm.gdextension не найден в шаблоне — собираем без нейронки"
-              find tpl -maxdepth 3 -not -path '*/.git*' | head -50
-            fi
+          if [ -f addons/godot_llm/bin/libgodot_llm.android.release.aarch64.so ]; then
+            cat > addons/godot_llm/godot_llm.gdextension <<'EOF'
+          [configuration]
+          entry_symbol = "llm_library_init"
+          compatibility_minimum = "4.2"
+
+          [libraries]
+          android.debug.arm64 = "bin/libgodot_llm.android.release.aarch64.so"
+          android.release.arm64 = "bin/libgodot_llm.android.release.aarch64.so"
+          EOF
+            echo "Addon OK:"; find addons -type f
           else
-            echo "::warning::не удалось склонировать godot-llm-template — собираем без нейронки"
+            echo "::warning::библиотека нейронки не собралась — APK без нейронки (солдаты на правилах)"
           fi
-          rm -rf tpl
       - name: Setup Godot + Android
         run: |
           mkdir -p ~/.local/share/godot/export_templates ~/.config/godot
