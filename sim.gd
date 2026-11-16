@@ -119,6 +119,12 @@ func _ready() -> void:
     _build_world()
     _build_body()
     _build_training_agents()
+    var main_label := Label3D.new()
+    main_label.text = "УЧЕНИК 1"
+    main_label.font_size = 64
+    main_label.outline_size = 10
+    main_label.position = Vector3(0, 1.75, 0)
+    human.add_child(main_label)
     _refresh_active()
     n_in = 17 + n_dof
     n_out = n_dof + 3
@@ -298,7 +304,7 @@ func _shape_for(n: String, hp: Vector3, tp: Vector3) -> Dictionary:
 func _build_training_agents() -> void:
     # Four training slots: one active physical learner + three visual observers.
     # Observers mirror the active pose so the same movement can be judged side-by-side.
-    for i in 4:
+    for i in 3:
         var inst := (load("res://human.glb") as PackedScene).instantiate()
         add_child(inst)
         inst.position = Vector3((i - 1.5) * 1.25, LIFT, 1.8)
@@ -307,7 +313,7 @@ func _build_training_agents() -> void:
         agent_clones.append(inst)
         agent_skeletons.append(ss)
         var lab := Label3D.new()
-        lab.text = "УЧЕНИК %d" % (i + 1)
+        lab.text = "УЧЕНИК %d" % (i + 2)
         lab.font_size = 64
         lab.outline_size = 10
         lab.modulate = Color(1, 1, 1, 1)
@@ -322,10 +328,10 @@ func _mirror_training_agents() -> void:
     for n in agent_skeletons.size():
         var ss: Skeleton3D = agent_skeletons[n]
         var inst: Node3D = agent_clones[n]
-        inst.position = Vector3((n - 1.5) * 1.25, LIFT, 1.8)
+        inst.position = Vector3((n - 1) * 1.5, LIFT, 1.8)
         for k in bodies.size():
             ss.set_bone_global_pose_override(b_bone[k], inv * ((bodies[k] as RigidBody3D).global_transform * (b_offset[k] as Transform3D)), 1.0, true)
-        agent_labels[n].text = "УЧЕНИК %d  %s" % [n + 1, _quality_mark(agent_quality)]
+        agent_labels[n].text = "УЧЕНИК %d  %s" % [n + 2, _quality_mark(agent_quality)]
 
 func _quality_mark(q: float) -> String:
     if q >= 0.82:
