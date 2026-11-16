@@ -63,6 +63,11 @@ var start := Vector3.ZERO
 var verdict := "старт"
 var verdict_col := Color(0.8, 0.8, 0.8)
 var flash_t := 0.0
+var done := false      # закончил эпизод, ждёт остальных
+var fell := false
+var res := 0.0         # авто-оценка эпизода
+var events: Array = [] # ручные похвалы, ждут подтверждения [шаг, значение]
+const PRAISE_WIN := 0.8 # сек: похвала засчитывается, только если он ещё в порядке через это время
 var label: Label3D
 
 func setup(s, i: int, pos: Vector3) -> void:
@@ -469,8 +474,51 @@ func tick() -> bool:
     thr += f.length()
     step += 1
     var pos := rb.global_position
-    var fell := goal != "fly" and lvl < 3 and h < 0.5 * h0 and step > 40
+    fell = goal != "fly" and lvl < 3 and h < 0.5 * h0 and step > 40
+    if not events.is_empty():
+        _resolve_events(false)
     return step >= sim.ep_steps or fell or not pos.is_finite() or pos.length() > 400.0
+
+func _ok_now() -> bool:
+    var rb: RigidBody3D = bodies[root_i]
+    if not rb.global_position.is_finite():
+        return false
+    var R: Basis = rb.global_transform.basis * root_rest_inv
+    return rb.global_position.y >= 0.5 * h0 and R.y.y >= 0.3
+
+# похвала относится к действию в момент нажатия: засчитывается, если через PRAISE_WIN он всё ещё в порядке
+func _resolve_events(final: bool) -> void:
+    var keep: Array = []
+    var win := int(PRAISE_WIN / dt)
+    for ev in events:
+        if final or step - int(ev[0]) >= win:
+            if _ok_now():
+                bonus += float(ev[1])
+            else:
+                flash("похвала не засчитана: упал", Color(1, 0.6, 0.3))
+        else:
+            keep.append(ev)
+    events = keep
+
+func give(v: float) -> void:
+    if v < 0.0:
+        bonus += v
+        flash("Плохо!", Color(1, 0.35, 0.3))
+        return
+    if not _ok_now():
+        flash("не засчитано: упал", Color(1, 0.6, 0.3))
+    elif done:
+        bonus += v
+        flash("Молодец!", Color(0.3, 1, 0.4))
+    else:
+        events.append([step, v])
+        flash("Молодец? (проверю)", Color(0.6, 1, 0.6))
+
+func finish() -> void:
+    res = score() if finite() else -100.0
+    if not events.is_empty():
+        _resolve_events(true)
+    done = true
 
 func finite() -> bool:
     return (bodies[root_i] as RigidBody3D).global_position.is_finite()

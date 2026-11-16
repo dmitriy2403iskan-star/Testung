@@ -175,9 +175,16 @@ func _build_world() -> void:
     add_child(mi)
 
 func _physics_process(_d: float) -> void:
+    var all_done := true
     for a in agents:
+        if a.done:
+            continue
         if a.tick():
-            _agent_done(a)
+            a.finish()
+        else:
+            all_done = false
+    if all_done and not agents.is_empty():
+        _round_end()
 
 # ---------- награда и обучение ----------
 func _mutate(mul: float) -> PackedFloat32Array:
@@ -199,50 +206,65 @@ func _mutate(mul: float) -> PackedFloat32Array:
             c[o3 + k] += randfn(0.0, sg)
     return c
 
-# человек закончил эпизод: сам оцениваем (лучше/хуже общего лучшего), учитываем ручной бонус
-func _agent_done(a) -> void:
-    var ok: bool = a.finite()
-    var auto_sc: float = a.score() if ok else -100.0
-    var sc: float = auto_sc + a.bonus
+# раунд: все люди играли варианты одной модели. Лучший (авто-оценка + подтверждённая похвала)
+# лучше прошлого эталона - становится новым эталоном, и следующие 4 играют его вариации.
+func _round_end() -> void:
     var prev := best
+    var top = agents[0]
+    var top_sc := -1e9
+    for a in agents:
+        var sc: float = a.res + a.bonus
+        if sc > top_sc:
+            top_sc = sc
+            top = a
     eps += 1
+    var improved := false
     if baseline:
-        best = auto_sc
+        best = top.res
         baseline = false
-        a.verdict = "старт %.1f" % auto_sc
-        a.verdict_col = Color(0.8, 0.8, 0.8)
-        _log("Старт: %.1f" % auto_sc)
-    elif sc > best:
-        best = auto_sc
-        w = a.cur_w.duplicate()
+        _log("Старт: %.1f" % best)
+    elif top_sc > best:
+        improved = true
+        best = top.res
+        w = top.cur_w.duplicate()
         stall = 0
         sigma = minf(sigma * 1.1, 0.3)
-        a.verdict = "★ лучше +%.1f" % (sc - prev)
-        a.verdict_col = Color(0.3, 1, 0.4)
-        _log("Эп. %d (№%d): лучше! %.1f" % [eps, a.idx + 1, auto_sc])
+        _log("Эп. %d: лучший №%d, %.1f - новый эталон" % [eps, top.idx + 1, top.res])
         _store()
     else:
         stall += 1
-        if stall > 12 * agents.size():
+        if stall > 3:
             sigma = maxf(sigma * 0.9, 0.01)
             stall = 0
-        if prev - sc <= 1.0:
-            a.verdict = "✓ норм %.1f" % (sc - prev)
+    for a in agents:
+        var sc2: float = a.res + a.bonus
+        if prev < -1e8:
+            a.verdict = "старт %.1f" % a.res
+            a.verdict_col = Color(0.8, 0.8, 0.8)
+        elif improved and a == top:
+            a.verdict = "★ эталон +%.1f" % (sc2 - prev)
+            a.verdict_col = Color(0.3, 1, 0.4)
+        elif prev - sc2 <= 1.0:
+            a.verdict = "✓ норм %.1f" % (sc2 - prev)
             a.verdict_col = Color(0.75, 1, 0.6)
         else:
-            a.verdict = "✗ хуже %.1f" % (sc - prev)
+            a.verdict = "✗ хуже %.1f" % (sc2 - prev)
             a.verdict_col = Color(1, 0.4, 0.35)
-    if a.bonus != 0.0:
-        a.verdict += " (ты %+.0f)" % a.bonus
-    a.flash_t = 2.5
-    a.bonus = 0.0
-    a.cur_w = _mutate(a.sigma_mul)
-    a.step = -1
+        if a.bonus != 0.0:
+            a.verdict += " (ты %+.0f)" % a.bonus
+        a.flash_t = 2.5
+        a.bonus = 0.0
+        a.events.clear()
+        a.done = false
+        a.cur_w = _mutate(a.sigma_mul)
+        a.step = -1
 
 func _restart_all() -> void:
     for a in agents:
         a.cur_w = w.duplicate()
         a.bonus = 0.0
+        a.events.clear()
+        a.done = false
         a.step = -1
         a.verdict = "старт"
         a.verdict_col = Color(0.8, 0.8, 0.8)
@@ -557,10 +579,9 @@ func _focus_targets() -> Array:
 # ручная оценка: выбранному человеку или всем, работает и в плюс, и в минус
 func _reward(v: float) -> void:
     for a in _focus_targets():
-        a.bonus += v
-        a.flash("Молодец!" if v > 0 else "Плохо!", Color(0.3, 1, 0.4) if v > 0 else Color(1, 0.35, 0.3))
+        a.give(v)
     var who := "всем" if focus < 0 else "№%d" % (focus + 1)
-    _log("[color=%s]%s (%s)[/color]" % ["lime" if v > 0 else "tomato", "Молодец!" if v > 0 else "Плохо!", who])
+    _log("[color=%s]%s (%s)[/color]" % ["lime" if v > 0 else "tomato", "Молодец (засчитаю, если не упадёт за 0.8 с)" if v > 0 else "Плохо!", who])
 
 func _speed() -> void:
     speed_i = (speed_i + 1) % SPEEDS.size()
