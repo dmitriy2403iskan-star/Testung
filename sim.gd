@@ -18,7 +18,16 @@ const FINGERS := ["index", "middle", "ring", "pinky", "thumb"]
 var sk: Skeleton3D
 var human: Node3D
 var cam: Camera3D
-var cam_off := Vector3(2.4, 1.5, -3.2)
+var cam_yaw := 143.0     # вращение вокруг человека (градусы)
+var cam_pitch := 12.0
+var cam_dist := 4.0
+var touches := {}
+var pinch_prev := 0.0
+var menu_box: VBoxContainer
+var panel_layer: CanvasLayer
+var panel_text: TextEdit
+var panel_title: Label
+var panel_apply_btn: Button
 var cam_sm := Vector3.ZERO
 var last_ms := 0
 var gain_sat := 0.15     # ошибка угла (рад), при которой момент достигает максимума
@@ -99,6 +108,7 @@ func _ready() -> void:
     n_out = n_dof + 3
     n_w = n_in * N_HID + N_HID + N_HID * n_out + n_out
     _build_ui()
+    _build_extra_ui()
     _load()
     _set_goal("stand")
     brain = get_node("/root/Brain")
@@ -123,8 +133,7 @@ func _build_world() -> void:
     cam.far = 500.0
     cam.fov = 60.0
     add_child(cam)
-    cam.position = cam_off
-    cam.look_at(Vector3(0, 0.9, 0))
+    _cam_update()
     var sun := DirectionalLight3D.new()
     sun.rotation_degrees = Vector3(-55, 25, 0)
     add_child(sun)
@@ -660,9 +669,7 @@ func _store() -> void:
     for v in w:
         arr.append(snappedf(v, 0.0001))
     skills[goal] = {"w": arr, "eps": eps, "best": best}
-    var f := FileAccess.open(SAVE, FileAccess.WRITE)
-    if f:
-        f.store_string(JSON.stringify(skills))
+    _save_file()
 
 func _load() -> void:
     if FileAccess.file_exists(SAVE):
@@ -670,21 +677,87 @@ func _load() -> void:
         if j is Dictionary:
             skills = j
 
-func _export() -> void:
+func _save_file() -> void:
+    var f := FileAccess.open(SAVE, FileAccess.WRITE)
+    if f:
+        f.store_string(JSON.stringify(skills))
+
+# разбор текста с умениями: терпим мусор вокруг, «умные» кавычки, обрезанный текст
+func _parse_skills(raw: String) -> Dictionary:
+    var t := raw.strip_edges()
+    for q in ["\u201c", "\u201d", "\u201e", "\u201f", "\u00ab", "\u00bb"]:
+        t = t.replace(q, "\"")
+    var a := t.find("{")
+    var b := t.rfind("}")
+    if a < 0 or b <= a:
+        return {"ok": false, "msg": "В тексте нет данных (не вижу { … }). Скопируйте весь текст экспорта целиком."}
+    t = t.substr(a, b - a + 1)
+    var js := JSON.new()
+    if js.parse(t) != OK:
+        return {"ok": false, "msg": "Текст повреждён (строка %d: %s). Вероятно, скопирован не целиком." % [js.get_error_line(), js.get_error_message()]}
+    if not (js.data is Dictionary):
+        return {"ok": false, "msg": "Это не экспорт умений."}
+    var good := {}
+    var info: Array = []
+    for g in js.data:
+        var v = js.data[g]
+        if not GOALS.has(str(g)) or not (v is Dictionary) or not v.has("w"):
+            info.append("«%s» пропущено" % str(g))
+            continue
+        var n: int = (v["w"] as Array).size()
+        if n != n_w:
+            info.append("%s: %d весов, а нужно %d (другая версия тела)" % [GOALS[g], n, n_w])
+        else:
+            good[str(g)] = v
+            info.append("%s ✓ (%d эп.)" % [GOALS[g], int(v.get("eps", 0))])
+    return {"ok": not good.is_empty(), "msg": ", ".join(info), "skills": good}
+
+func _open_panel(mode: String) -> void:
     _store()
-    var s := JSON.stringify(skills)
-    DisplayServer.clipboard_set(s)
-    _log("Умения скопированы в буфер (%d КБ). Вставь в заметки или отправь себе." % (s.length() / 1024))
+    if mode == "export":
+        var s := JSON.stringify(skills)
+        DisplayServer.clipboard_set(s)
+        panel_text.text = s
+        panel_title.text = "ЭКСПОРТ. Текст уже скопирован в буфер (%d КБ). Если не вставляется — выделите всё ниже (долгое нажатие → Выбрать всё) и скопируйте вручную." % (s.length() / 1024)
+        panel_apply_btn.visible = false
+    else:
+        panel_text.text = DisplayServer.clipboard_get()
+        panel_title.text = "ИМПОРТ. Вставьте текст умений (долгое нажатие → Вставить) и нажмите «Загрузить»."
+        panel_apply_btn.visible = true
+    panel_layer.visible = true
+
+func _panel_close() -> void:
+    panel_layer.visible = false
+
+func _panel_copy() -> void:
+    DisplayServer.clipboard_set(panel_text.text)
+    _log("Текст скопирован в буфер.")
+
+func _panel_paste() -> void:
+    panel_text.text = DisplayServer.clipboard_get()
+
+func _panel_apply() -> void:
+    var r := _parse_skills(panel_text.text)
+    if not r["ok"]:
+        panel_title.text = "НЕ ЗАГРУЖЕНО: " + str(r["msg"])
+        _log("[color=tomato]Импорт: %s[/color]" % r["msg"])
+        return
+    _store()
+    var got: Dictionary = r["skills"]
+    for g in got:
+        skills[g] = got[g]
+    _save_file()
+    w = PackedFloat32Array()
+    var target := goal if got.has(goal) else str(got.keys()[0])
+    _log("[color=lime]Импорт: %s[/color]" % r["msg"])
+    _set_goal(target)
+    panel_layer.visible = false
+
+func _export() -> void:
+    _open_panel("export")
 
 func _import() -> void:
-    var j = JSON.parse_string(DisplayServer.clipboard_get())
-    if j is Dictionary and not j.is_empty():
-        w = PackedFloat32Array()
-        skills = j
-        _set_goal(goal)
-        _log("Умения загружены из буфера.")
-    else:
-        _log("В буфере нет умений.")
+    _open_panel("import")
 
 func _reset_skill() -> void:
     skills.erase(goal)
@@ -721,6 +794,7 @@ func _build_ui() -> void:
     box.offset_top = -560
     box.offset_bottom = -10
     cl.add_child(box)
+    menu_box = box
     log_box = RichTextLabel.new()
     log_box.bbcode_enabled = true
     log_box.scroll_following = true
@@ -757,6 +831,7 @@ func _build_ui() -> void:
     r3.add_child(_btn("Экспорт", _export))
     r3.add_child(_btn("Импорт", _import))
     r3.add_child(_btn("Сброс", _reset_skill))
+    r3.add_child(_btn("Вид ⟲", _cam_reset))
     var rg: HBoxContainer
     var gi := 0
     for g in groups:
@@ -767,6 +842,56 @@ func _build_ui() -> void:
         group_btns[g] = gb
         rg.add_child(gb)
         gi += 1
+
+func _build_extra_ui() -> void:
+    var cl2 := CanvasLayer.new()
+    cl2.layer = 5
+    cl2.process_mode = Node.PROCESS_MODE_ALWAYS
+    add_child(cl2)
+    var mb := Button.new()
+    mb.text = "☰"
+    mb.add_theme_font_size_override("font_size", 34)
+    mb.anchor_left = 1.0
+    mb.anchor_right = 1.0
+    mb.offset_left = -90
+    mb.offset_right = -10
+    mb.offset_top = 10
+    mb.offset_bottom = 90
+    mb.pressed.connect(func(): menu_box.visible = not menu_box.visible)
+    cl2.add_child(mb)
+    # окно экспорта / импорта
+    panel_layer = CanvasLayer.new()
+    panel_layer.layer = 10
+    panel_layer.process_mode = Node.PROCESS_MODE_ALWAYS
+    panel_layer.visible = false
+    add_child(panel_layer)
+    var bg := ColorRect.new()
+    bg.color = Color(0, 0, 0, 0.92)
+    bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+    panel_layer.add_child(bg)
+    var v := VBoxContainer.new()
+    v.set_anchors_preset(Control.PRESET_FULL_RECT)
+    v.offset_left = 14
+    v.offset_right = -14
+    v.offset_top = 40
+    v.offset_bottom = -40
+    panel_layer.add_child(v)
+    panel_title = Label.new()
+    panel_title.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+    panel_title.add_theme_font_size_override("font_size", 24)
+    v.add_child(panel_title)
+    panel_text = TextEdit.new()
+    panel_text.size_flags_vertical = Control.SIZE_EXPAND_FILL
+    panel_text.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+    panel_text.add_theme_font_size_override("font_size", 18)
+    v.add_child(panel_text)
+    var hb := HBoxContainer.new()
+    v.add_child(hb)
+    hb.add_child(_btn("Копировать", _panel_copy))
+    hb.add_child(_btn("Из буфера", _panel_paste))
+    panel_apply_btn = _btn("Загрузить", _panel_apply)
+    hb.add_child(panel_apply_btn)
+    hb.add_child(_btn("Закрыть", _panel_close))
 
 func _gtext(g: String) -> String:
     return ("%s ✓" if groups[g] else "%s ✗") % GROUP_NAMES[g]
@@ -811,6 +936,55 @@ func _screen() -> void:
 func _pause() -> void:
     get_tree().paused = not get_tree().paused
 
+# ---------- камера: вращение пальцем / мышью, щипок или колесо - приближение ----------
+func _cam_update() -> void:
+    var yaw := deg_to_rad(cam_yaw)
+    var pit := deg_to_rad(cam_pitch)
+    var tgt := cam_sm + Vector3(0, 0.9, 0)
+    cam.position = tgt + Vector3(sin(yaw) * cos(pit), sin(pit), cos(yaw) * cos(pit)) * cam_dist
+    cam.look_at(tgt)
+
+func _cam_reset() -> void:
+    cam_yaw = 143.0
+    cam_pitch = 12.0
+    cam_dist = 4.0
+
+func _cam_free_area(p: Vector2) -> bool:
+    if panel_layer.visible:
+        return false
+    return (not menu_box.visible) or p.y < get_viewport().get_visible_rect().size.y - 560.0
+
+func _unhandled_input(e: InputEvent) -> void:
+    if e is InputEventScreenTouch:
+        if e.pressed:
+            if _cam_free_area(e.position):
+                touches[e.index] = e.position
+        else:
+            touches.erase(e.index)
+            pinch_prev = 0.0
+    elif e is InputEventScreenDrag:
+        if not touches.has(e.index):
+            return
+        touches[e.index] = e.position
+        if touches.size() >= 2:
+            var ks := touches.keys()
+            var d: float = (touches[ks[0]] - touches[ks[1]]).length()
+            if pinch_prev > 0.0:
+                cam_dist = clampf(cam_dist * pinch_prev / maxf(d, 1.0), 1.2, 15.0)
+            pinch_prev = d
+        else:
+            cam_yaw -= e.relative.x * 0.35
+            cam_pitch = clampf(cam_pitch + e.relative.y * 0.25, 2.0, 85.0)
+    elif e is InputEventMouseMotion and not DisplayServer.is_touchscreen_available():
+        if e.button_mask & MOUSE_BUTTON_MASK_LEFT and _cam_free_area(e.position):
+            cam_yaw -= e.relative.x * 0.35
+            cam_pitch = clampf(cam_pitch + e.relative.y * 0.25, 2.0, 85.0)
+    elif e is InputEventMouseButton and e.pressed:
+        if e.button_index == MOUSE_BUTTON_WHEEL_UP:
+            cam_dist = clampf(cam_dist * 0.9, 1.2, 15.0)
+        elif e.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+            cam_dist = clampf(cam_dist * 1.1, 1.2, 15.0)
+
 # ---------- кадр: кости скелета повторяют физические тела ----------
 func _process(_d: float) -> void:
     var now := Time.get_ticks_msec()
@@ -821,9 +995,9 @@ func _process(_d: float) -> void:
     if tp.is_finite():
         var tgt := Vector3(tp.x, 0.0, tp.z)
         cam_sm = cam_sm.lerp(tgt, 1.0 - exp(-rd * 3.0))
-        cam.position = cam_sm + cam_off
+    _cam_update()
     var inv := sk.global_transform.affine_inverse()
     for k in bodies.size():
         var bw: Transform3D = (bodies[k] as RigidBody3D).global_transform * (b_offset[k] as Transform3D)
         sk.set_bone_global_pose_override(b_bone[k], inv * bw, 1.0, true)
-    hud.text = "%s | эп. %d | лучший %.1f | σ %.2f\nшаг %d/%d | бонус %+.0f | высота %.2f\nНейросеть тела: %d весов ✓ | Нейронка-переводчик: %s" % [GOALS[goal], eps, best if best > -1e8 else 0.0, sigma, maxi(step, 0), ep_steps, bonus, tp.y, n_w, brain.mode_text()]
+    hud.text = "%s | эп. %d | лучший %.1f | σ %.2f\nшаг %d/%d | бонус %+.0f | высота %.2f\nСеть тела: %d весов ✓\nНейронка-переводчик: %s" % [GOALS[goal], eps, best if best > -1e8 else 0.0, sigma, maxi(step, 0), ep_steps, bonus, tp.y, n_w, brain.mode_text()]
