@@ -1102,8 +1102,12 @@ func _unhandled_input(e: InputEvent) -> void:
                 cam_dist = clampf(cam_dist * pinch_prev / maxf(d, 1.0), 1.2, 15.0)
             pinch_prev = d
         else:
-            cam_yaw -= e.relative.x * 0.35
-            cam_pitch = clampf(cam_pitch + e.relative.y * 0.25, 2.0, 85.0)
+            if free_cam:
+                free_cam_yaw -= e.relative.x * 0.35
+                free_cam_pitch = clampf(free_cam_pitch + e.relative.y * 0.25, -85.0, 85.0)
+            else:
+                cam_yaw -= e.relative.x * 0.35
+                cam_pitch = clampf(cam_pitch + e.relative.y * 0.25, 2.0, 85.0)
     elif e is InputEventMouseMotion and not DisplayServer.is_touchscreen_available():
         if e.button_mask & MOUSE_BUTTON_MASK_LEFT and _cam_free_area(e.position):
             if free_cam:
@@ -1141,6 +1145,19 @@ func _process(_d: float) -> void:
     if tp.is_finite():
         var tgt := Vector3(tp.x, 0.0, tp.z)
         cam_sm = cam_sm.lerp(tgt, 1.0 - exp(-rd * 3.0))
+    if free_cam:
+        var move := Vector3.ZERO
+        if Input.is_key_pressed(KEY_W): move.z -= 1.0
+        if Input.is_key_pressed(KEY_S): move.z += 1.0
+        if Input.is_key_pressed(KEY_A): move.x -= 1.0
+        if Input.is_key_pressed(KEY_D): move.x += 1.0
+        if Input.is_key_pressed(KEY_Q): move.y -= 1.0
+        if Input.is_key_pressed(KEY_E): move.y += 1.0
+        if move != Vector3.ZERO:
+            var yaw := deg_to_rad(free_cam_yaw)
+            var forward := Vector3(sin(yaw), 0.0, cos(yaw))
+            var right := Vector3(cos(yaw), 0.0, -sin(yaw))
+            free_cam_pos += (right * move.x + forward * move.z + Vector3.UP * move.y) * cam_move_speed * rd
     _cam_update()
     _mirror_training_agents()
     var inv := sk.global_transform.affine_inverse()
