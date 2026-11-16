@@ -1,0 +1,65 @@
+name: llm-test
+# Проверяет на Linux, что нейронка (godot-llm + Qwen) грузится и понимает приказы через brain.gd
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential ninja-build
+      - name: Build godot-llm (Linux)
+        run: |
+          git clone https://github.com/Adriankhl/godot-llm llm
+          cd llm
+          git checkout fb12d7d9c0ff6274bb6c5267e86004482befc842
+          git submodule update --init --recursive
+          mkdir build && cd build
+          cmake .. --preset linux-cpu-release
+          ninja -j $(nproc)
+      - name: Godot 4.2.2
+        run: |
+          curl -sSL -o g.zip https://github.com/godotengine/godot-builds/releases/download/4.2.2-stable/Godot_v4.2.2-stable_linux.x86_64.zip
+          unzip -q g.zip
+          chmod +x Godot_v4.2.2-stable_linux.x86_64
+      - name: Model
+        run: |
+          curl -sSL -o model.gguf "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+          ls -la model.gguf
+      - name: Test project
+        run: |
+          mkdir -p t/addons/godot_llm/bin
+          cp llm/build/libgodot_llm.linux.release.x86_64.so t/addons/godot_llm/bin/
+          cat > t/addons/godot_llm/godot_llm.gdextension <<'EOF2'
+          [configuration]
+          entry_symbol = "llm_library_init"
+          compatibility_minimum = "4.2"
+
+          [libraries]
+          linux.debug.x86_64 = "bin/libgodot_llm.linux.release.x86_64.so"
+          linux.release.x86_64 = "bin/libgodot_llm.linux.release.x86_64.so"
+          EOF2
+          cp brain.gd t/brain.gd
+          cp ci/llm_test.gd ci/llm_test.tscn t/
+          cat > t/project.godot <<'EOF2'
+          config_version=5
+
+          [application]
+          config/name="llmtest"
+          run/main_scene="res://llm_test.tscn"
+
+          [autoload]
+          Brain="*res://brain.gd"
+          EOF2
+          mkdir -p ~/.local/share/godot/app_userdata/llmtest
+          cp model.gguf ~/.local/share/godot/app_userdata/llmtest/model.gguf
+          ./Godot_v4.2.2-stable_linux.x86_64 --headless --path t --import || true
+          ./Godot_v4.2.2-stable_linux.x86_64 --headless --path t 2>&1 | tee test.log
+          grep -q "TEST RESULT: OK" test.log

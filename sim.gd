@@ -4,7 +4,7 @@ extends Node3D
 # Нейросеть выдаёт целевой угол для каждой оси каждого сустава, PD-регулятор крутит.
 # Нулевой выход = держать исходную позу, поэтому модель сразу стоит.
 
-const GOALS := {"stand": "СТОЙКА", "walk": "ХОДЬБА", "jump": "ПРЫЖОК", "fly": "ПОЛЁТ"}
+const GOALS := {"stand": "СТОЯТЬ", "walk": "ИДТИ", "jump": "ПРЫГАТЬ", "fly": "ЛЕТАТЬ"}
 const GROUP_NAMES := {"legs": "Ноги", "toes": "Стопы", "spine": "Корпус", "neck": "Шея", "arms": "Руки", "hands": "Кисти", "fingers": "Пальцы", "thrust": "Тяга"}
 const N_HID := 16
 const MUT_P := 0.05
@@ -636,9 +636,19 @@ func _set_goal(g: String) -> void:
     step = -1
     _log("Цель: [b]%s[/b]" % GOALS[g])
 
-func _on_goal(g: String) -> void:
-    if GOALS.has(g):
-        _set_goal(g)
+func _on_goal(g: String, by: String) -> void:
+    if not GOALS.has(g):
+        return
+    match by:
+        "llm":
+            _log("[color=cyan]🧠 Нейронка поняла приказ → %s[/color]" % GOALS[g])
+        "words":
+            _log("[color=orange]Нейронка не загружена, поняла по ключевым словам → %s[/color]" % GOALS[g])
+        "timeout":
+            _log("[color=orange]Нейронка не ответила за минуту, по ключевым словам → %s[/color]" % GOALS[g])
+        _:
+            _log("[color=orange]Нейронка ответила непонятно, по ключевым словам → %s[/color]" % GOALS[g])
+    _set_goal(g)
 
 # ---------- сохранение / экспорт умений ----------
 func _store() -> void:
@@ -814,4 +824,4 @@ func _process(_d: float) -> void:
     for k in bodies.size():
         var bw: Transform3D = (bodies[k] as RigidBody3D).global_transform * (b_offset[k] as Transform3D)
         sk.set_bone_global_pose_override(b_bone[k], inv * bw, 1.0, true)
-    hud.text = "%s | эп. %d | лучший %.1f | σ %.2f\nшаг %d/%d | бонус %+.0f | высота %.2f" % [GOALS[goal], eps, best if best > -1e8 else 0.0, sigma, maxi(step, 0), ep_steps, bonus, tp.y]
+    hud.text = "%s | эп. %d | лучший %.1f | σ %.2f\nшаг %d/%d | бонус %+.0f | высота %.2f\nНейросеть тела: %d весов ✓ | Нейронка-переводчик: %s" % [GOALS[goal], eps, best if best > -1e8 else 0.0, sigma, maxi(step, 0), ep_steps, bonus, tp.y, n_w, brain.mode_text()]

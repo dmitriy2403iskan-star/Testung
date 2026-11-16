@@ -2,7 +2,7 @@ extends Node
 # Локальная нейронка (godot-llm + Qwen): превращает текст приказа в цель обучения.
 # Без нейронки работают простые правила по ключевым словам.
 signal status(text)
-signal goal_ready(goal)
+signal goal_ready(goal, by)
 var last_status := ""
 
 const MODEL_URL := "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"
@@ -76,7 +76,7 @@ func _process(_d: float) -> void:
         _st("Модель: %d%%" % (100 * http.get_downloaded_bytes() / http.get_body_size()))
     if busy and now - t0 > 60000:
         busy = false
-        goal_ready.emit(goal_rules(cur_text))
+        goal_ready.emit(goal_rules(cur_text), "timeout")
 
 func ask_goal(text: String) -> void:
     if llm_ready and not busy:
@@ -85,17 +85,17 @@ func ask_goal(text: String) -> void:
         t0 = Time.get_ticks_msec()
         llm.run_generate_text(_goal_prompt(text), "", GOAL_SCHEMA)
     else:
-        goal_ready.emit(goal_rules(text))
+        goal_ready.emit(goal_rules(text), "words")
 
 func _on_done(text: String) -> void:
     if not busy:
         return
     busy = false
     var j = JSON.parse_string(text)
-    if j is Dictionary and j.has("goal"):
-        goal_ready.emit(str(j["goal"]))
+    if j is Dictionary and j.has("goal") and str(j["goal"]) in ["walk", "jump", "fly", "stand"]:
+        goal_ready.emit(str(j["goal"]), "llm")
     else:
-        goal_ready.emit(goal_rules(cur_text))
+        goal_ready.emit(goal_rules(cur_text), "bad_answer")
 
 func _goal_prompt(text: String) -> String:
     var sys := "Определи цель тренировки человека по приказу. walk — ходить, jump — прыгать, fly — летать, stand — стоять."
@@ -110,6 +110,15 @@ func goal_rules(text: String) -> String:
     if "стой" in t or "замри" in t or "стоя" in t or "устой" in t:
         return "stand"
     return "walk"
+
+func mode_text() -> String:
+    if llm_ready:
+        return "загружена ✓"
+    if not ClassDB.class_exists("GDLlama"):
+        return "НЕТ ✗ (аддон не загрузился)"
+    if http and http.get_body_size() > 0:
+        return "качает модель %d%%" % (100 * http.get_downloaded_bytes() / http.get_body_size())
+    return "готовится…"
 
 func _st(t: String) -> void:
     last_status = t
