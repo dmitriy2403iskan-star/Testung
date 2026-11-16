@@ -1,9 +1,9 @@
 config_version=5
 
 [application]
-config/name="Командир"
+config/name="Человек"
 config/icon="res://icon.svg"
-run/main_scene="res://main.tscn"
+run/main_scene="res://sim.tscn"
 config/features=PackedStringArray("4.2", "GL Compatibility")
 
 [display]
@@ -17,6 +17,11 @@ window/handheld/orientation=1
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
 textures/vram_compression/import_etc2_astc=true
+
+[physics]
+
+common/physics_ticks_per_second=120
+3d/solver/solver_iterations=32
 
 [autoload]
 

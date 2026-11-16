@@ -32,10 +32,23 @@ jobs:
           cd build
           cmake .. --preset android-cpu-release
           ninja -j $(nproc)
+      - name: Inspect library
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          T=$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64
+          L=llm/build/libgodot_llm.android.release.aarch64.so
+          ls -la llm/build/*.so
+          echo "--- NEEDED ---"; $T/bin/llvm-readelf -d $L | grep -i "NEEDED\|SONAME" || true
+          echo "--- entry symbol ---"; $T/bin/llvm-nm -D --defined-only $L | grep -i "llm_library_init" || echo "NO llm_library_init!"
+          cp $T/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so llm/build/ || true
+          ls -la llm/build/libc++_shared.so || true
       - uses: actions/upload-artifact@v4
         with:
           name: android-llm-lib
-          path: llm/build/libgodot_llm.android.release.aarch64.so
+          path: |
+            llm/build/libgodot_llm.android.release.aarch64.so
+            llm/build/libc++_shared.so
           if-no-files-found: error
 
   apk:
@@ -62,6 +75,10 @@ jobs:
           [libraries]
           android.debug.arm64 = "bin/libgodot_llm.android.release.aarch64.so"
           android.release.arm64 = "bin/libgodot_llm.android.release.aarch64.so"
+
+          [dependencies]
+          android.debug.arm64 = {"res://addons/godot_llm/bin/libc++_shared.so": ""}
+          android.release.arm64 = {"res://addons/godot_llm/bin/libc++_shared.so": ""}
           EOF
             echo "Addon OK:"; find addons -type f
           else
@@ -103,6 +120,9 @@ jobs:
           echo "------------------"
           godot --headless --import || true
           godot --headless --verbose --export-debug "Android" build/komandir.apk
+          echo "--- libs inside APK ---"
+          unzip -l build/komandir.apk | grep -i "\.so\|lib/" || true
+          ls -la build/
       - uses: actions/upload-artifact@v4
         with:
           name: komandir-apk
