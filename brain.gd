@@ -98,7 +98,11 @@ func _on_done(text: String) -> void:
         goal_ready.emit(goal_rules(cur_text), "bad_answer")
 
 func _goal_prompt(text: String) -> String:
-    var sys := "Определи цель тренировки человека по приказу. walk — ходить, jump — прыгать, fly — летать, stand — стоять."
+    var sys := "Ты определяешь цель тренировки человека по приказу командира. Ответ — одно слово из четырёх.\n"
+    sys += "stand — стоять, стой, замри, стоять смирно, не двигайся, удержи равновесие.\n"
+    sys += "walk — идти, ходить, шагай, иди вперёд, беги, побежали.\n"
+    sys += "jump — прыгать, прыгай, подпрыгни, скачи, прыжок. Это прыжок на месте вверх, НЕ полёт.\n"
+    sys += "fly — лететь, летать, взлетай, парить, поднимись в воздух."
     return "<|im_start|>system\n%s<|im_end|>\n<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n" % [sys, text]
 
 func goal_rules(text: String) -> String:

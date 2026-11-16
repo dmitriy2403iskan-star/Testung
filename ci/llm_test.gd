@@ -1,6 +1,6 @@
 extends Node
-# Проверка нейронки: тот же brain.gd, настоящая модель. Падает, если «Стоять» понято не как stand.
-const CASES := [["Стоять", "stand"], ["Стой на месте", "stand"], ["Прыгай", "jump"], ["Иди вперёд", "walk"], ["Взлетай", "fly"]]
+# Проверка нейронки: тот же brain.gd, настоящая модель. Падает, если хоть одна фраза понята не так.
+const CASES := [["Стоять", "stand"], ["Стой на месте", "stand"], ["Замри", "stand"], ["Прыгай", "jump"], ["Подпрыгни", "jump"], ["Иди вперёд", "walk"], ["Побежали", "walk"], ["Взлетай", "fly"], ["Лети", "fly"]]
 var i := -1
 var waited := 0.0
 var failed := false
@@ -33,6 +33,6 @@ func _on_goal(g: String, by: String) -> void:
     var want: String = CASES[i][1]
     var ok := (g == want and by == "llm")
     print("TEST: «%s» -> %s (кто понял: %s), ожидалось %s: %s" % [CASES[i][0], g, by, want, "OK" if ok else "НЕ СОВПАЛО"])
-    if not ok and i < 2:
+    if not ok:
         failed = true
     _next()
