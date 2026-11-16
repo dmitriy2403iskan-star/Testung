@@ -1,0 +1,8 @@
+{"gait": {"name": "Пример: шаг с подвесом", "period": 0.6, "mix": 0.0,
+ "joints": {
+  "thigh_l.x": {"offset_deg": -20, "amp_deg": 50, "phase": 0.0},
+  "thigh_r.x": {"offset_deg": -20, "amp_deg": 50, "phase": 0.5},
+  "calf_l.x":  {"offset_deg": 40, "amp_deg": 35, "phase": 0.25},
+  "calf_r.x":  {"offset_deg": 40, "amp_deg": 35, "phase": 0.75},
+  "spine_01.x": {"offset_deg": 8, "amp_deg": 0, "phase": 0.0}
+ }}}

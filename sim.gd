@@ -14,7 +14,7 @@ const SPEEDS := [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
 const SPACING := 1.7
 const SIGMA_MUL := [1.0, 0.6, 1.5, 2.2]
 const SUPPORT_NAMES := ["Выкл", "Лёгкий", "Средний", "Сильный"]
-const MENU_H := 640.0
+const MENU_H := 720.0
 
 var cam: Camera3D
 var cam_mode := 0         # 0 - вокруг людей, 1 - свободный полёт
@@ -52,6 +52,21 @@ var n_in := 0
 var n_out := 0
 var n_w := 0
 
+var auto_on := true       # автотренер и автоподбор подвеса
+var ok_rounds := 0
+var bad_rounds := 0
+var auto_btn: Button
+var gait_on := false
+var gait_off: Array = []
+var gait_amp: Array = []
+var gait_ph: Array = []
+var gait_period := 1.0
+var gait_mix := 0.25      # сколько нейросеть добавляет поверх походки (0 = чистая походка)
+var gait_name := ""
+var gait_json := {}
+var gait_btn: Button
+const GAIT_SAVE := "user://gait.json"
+
 var skills := {}
 var goal := "stand"
 var w := PackedFloat32Array()
@@ -79,6 +94,10 @@ func _ready() -> void:
     _build_cam_pad()
     _spawn(n_agents)
     _load()
+    if FileAccess.file_exists(GAIT_SAVE):
+        var gj = JSON.parse_string(FileAccess.get_file_as_string(GAIT_SAVE))
+        if gj is Dictionary:
+            set_gait(gj)
     _set_goal("stand")
     brain = get_node("/root/Brain")
     brain.goal_ready.connect(_on_goal)
@@ -236,6 +255,8 @@ func _round_end() -> void:
         if stall > 3:
             sigma = maxf(sigma * 0.9, 0.01)
             stall = 0
+    if auto_on:
+        _auto_curriculum()
     for a in agents:
         var sc2: float = a.res + a.bonus
         if prev < -1e8:
@@ -259,7 +280,55 @@ func _round_end() -> void:
         a.cur_w = _mutate(a.sigma_mul)
         a.step = -1
 
+# автоподвес: если раунд удался несколько раз подряд - ослабляем подвес, если все падают - усиливаем
+func _round_success() -> bool:
+    var good := 0
+    var top_fwd := -9.0
+    var top_h := 0.0
+    for a in agents:
+        if not a.fell and a.fin_up > 0.8 and a.finite():
+            good += 1
+        top_fwd = maxf(top_fwd, a.fin_fwd)
+        top_h = maxf(top_h, a.max_h)
+    if good * 4 < agents.size() * 3:
+        return false
+    if goal == "walk":
+        return top_fwd > 1.5
+    if goal == "jump":
+        return top_h > agents[0].h0 + 0.15
+    if goal == "fly":
+        return top_h > agents[0].h0 + 0.5
+    return true
+
+func _auto_curriculum() -> void:
+    if baseline:
+        return
+    if _round_success():
+        ok_rounds += 1
+        bad_rounds = 0
+    else:
+        bad_rounds += 1
+        ok_rounds = 0
+    if ok_rounds >= 3:
+        ok_rounds = 0
+        if support > 0:
+            _log("[color=cyan]Авто: удаётся 3 раунда подряд → ослабляю подвес[/color]")
+            set_support(support - 1)
+        else:
+            _log("[color=lime]Авто: без подвеса стабильно получается («%s» освоено). Можно ставить следующую цель.[/color]" % GOALS[goal])
+    elif bad_rounds >= 6 and support < 3:
+        bad_rounds = 0
+        _log("[color=orange]Авто: 6 раундов неудач → усиливаю подвес[/color]")
+        set_support(support + 1)
+
+func _auto_toggle() -> void:
+    auto_on = not auto_on
+    auto_btn.text = "Авто ✓" if auto_on else "Авто ✗"
+    _log("Автоматика (оценка действий + подвес): %s" % ("вкл" if auto_on else "выкл"))
+
 func _restart_all() -> void:
+    ok_rounds = 0
+    bad_rounds = 0
     for a in agents:
         a.cur_w = w.duplicate()
         a.bonus = 0.0
@@ -308,6 +377,67 @@ func _on_goal(g: String, by: String) -> void:
             _log("[color=orange]Нейронка ответила непонятно, по ключевым словам → %s[/color]" % GOALS[g])
     _set_goal(g)
 
+# ---------- походка из файла (может быть написана любым ИИ, см. docs/) ----------
+# формат: {"gait": {"name": "...", "period": 1.0, "mix": 0.25,
+#          "joints": {"thigh_l.x": {"offset_deg": 0, "amp_deg": 25, "phase": 0.0}, ...}}}
+func set_gait(d: Dictionary) -> String:
+    var g = d.get("gait", d)
+    if not (g is Dictionary) or not (g.get("joints") is Dictionary):
+        return "нет раздела joints"
+    var per := float(g.get("period", 1.0))
+    if per < 0.2 or per > 5.0:
+        return "period должен быть от 0.2 до 5 секунд"
+    var names := {}
+    for i in n_dof:
+        names[agents[0].d_name[i]] = i
+    var off: Array = []
+    var amp: Array = []
+    var ph: Array = []
+    for i in n_dof:
+        off.append(0.0)
+        amp.append(0.0)
+        ph.append(0.0)
+    var unknown: Array = []
+    var used := 0
+    for k in g["joints"]:
+        if not names.has(str(k)):
+            unknown.append(str(k))
+            continue
+        var j: Dictionary = g["joints"][k]
+        var i: int = names[str(k)]
+        off[i] = deg_to_rad(float(j.get("offset_deg", 0.0)))
+        amp[i] = deg_to_rad(float(j.get("amp_deg", 0.0)))
+        ph[i] = float(j.get("phase", 0.0))
+        used += 1
+    if used == 0:
+        return "ни одного известного сустава (примеры имён: thigh_l.x, calf_r.x). Неизвестные: %s" % ", ".join(unknown.slice(0, 5))
+    gait_off = off
+    gait_amp = amp
+    gait_ph = ph
+    gait_period = per
+    gait_mix = clampf(float(g.get("mix", 0.25)), 0.0, 1.0)
+    gait_name = str(g.get("name", "без имени"))
+    gait_json = {"gait": g}
+    var f := FileAccess.open(GAIT_SAVE, FileAccess.WRITE)
+    if f:
+        f.store_string(JSON.stringify(gait_json))
+    _log("[color=lime]Походка «%s»: суставов %d, период %.2f с%s[/color]" % [gait_name, used, per, "" if unknown.is_empty() else ", неизвестных имён: %d (%s)" % [unknown.size(), ", ".join(unknown.slice(0, 3))]])
+    return ""
+
+func _gait_toggle() -> void:
+    if gait_amp.is_empty():
+        _log("[color=tomato]Походки нет. Импорт → вставьте файл походки (см. docs/GAIT_FOR_AI.md в репозитории).[/color]")
+        return
+    gait_on = not gait_on
+    gait_btn.text = "Походка ✓" if gait_on else "Походка ✗"
+    baseline = true
+    best = -1e9
+    _restart_all()
+    if gait_on:
+        _log("Походка «%s» включена. Для проверки: цель «ходи», подвес Средний/Сильный." % gait_name)
+    else:
+        _log("Походка выключена.")
+
 # ---------- сохранение / экспорт умений ----------
 func _store() -> void:
     if w.size() != n_w or n_w == 0:
@@ -347,6 +477,8 @@ func _parse_skills(raw: String) -> Dictionary:
     var good := {}
     var info: Array = []
     for g in js.data:
+        if str(g).begins_with("_"):
+            continue
         var v = js.data[g]
         if not GOALS.has(str(g)) or not (v is Dictionary) or not v.has("w"):
             info.append("«%s» пропущено" % str(g))
@@ -362,7 +494,12 @@ func _parse_skills(raw: String) -> Dictionary:
 func _open_panel(mode: String) -> void:
     _store()
     if mode == "export":
-        var s := JSON.stringify(skills)
+        var parts: Array = []
+        for g in skills:
+            var v: Dictionary = skills[g].duplicate()
+            v["название"] = GOALS.get(g, g)
+            parts.append("\"%s\": %s" % [g, JSON.stringify(v)])
+        var s := "{\n\"_info\": \"Умения человека (Testung). Ключ = цель, eps = число эпизодов, best = лучшая оценка, w = веса сети (%d штук). Загружайте целиком через Импорт.\",\n%s\n}" % [n_w, ",\n".join(parts)]
         DisplayServer.clipboard_set(s)
         panel_text.text = s
         panel_title.text = "ЭКСПОРТ. Текст уже скопирован в буфер (%d КБ). Если не вставляется — выделите всё ниже (долгое нажатие → Выбрать всё) и скопируйте вручную." % (s.length() / 1024)
@@ -384,6 +521,23 @@ func _panel_paste() -> void:
     panel_text.text = DisplayServer.clipboard_get()
 
 func _panel_apply() -> void:
+    var raw := panel_text.text
+    var ga := raw.find("\"gait\"")
+    if ga >= 0 and raw.find("\"joints\"") >= 0:
+        var jd = JSON.parse_string(raw.substr(raw.find("{")))
+        if jd is Dictionary:
+            var er := set_gait(jd)
+            if er == "":
+                panel_layer.visible = false
+                gait_on = false
+                _gait_toggle()
+                _set_goal("walk")
+                if support == 0:
+                    set_support(2)
+            else:
+                panel_title.text = "ПОХОДКА НЕ ЗАГРУЖЕНА: " + er
+                _log("[color=tomato]Походка: %s[/color]" % er)
+            return
     var r := _parse_skills(panel_text.text)
     if not r["ok"]:
         panel_title.text = "НЕ ЗАГРУЖЕНО: " + str(r["msg"])
@@ -488,6 +642,12 @@ func _build_ui() -> void:
     r3.add_child(_btn("Сброс", _reset_skill))
     screen_btn = _btn("Экран ✓", _screen)
     r3.add_child(screen_btn)
+    var r5 := HBoxContainer.new()
+    box.add_child(r5)
+    auto_btn = _btn("Авто ✓", _auto_toggle)
+    r5.add_child(auto_btn)
+    gait_btn = _btn("Походка ✗", _gait_toggle)
+    r5.add_child(gait_btn)
     var rg: HBoxContainer
     var gi := 0
     for g in groups:

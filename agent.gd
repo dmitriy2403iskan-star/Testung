@@ -38,6 +38,7 @@ var d_kp: Array = []
 var d_kd: Array = []
 var d_t: Array = []
 var d_g: Array = []
+var d_name: Array = []
 var root_rest_inv := Basis()
 var h0 := 0.9
 var n_dof := 0
@@ -63,8 +64,13 @@ var start := Vector3.ZERO
 var verdict := "старт"
 var verdict_col := Color(0.8, 0.8, 0.8)
 var flash_t := 0.0
+var q_last := 0
+var q_good := 0
+var q_bad := 0
 var done := false      # закончил эпизод, ждёт остальных
 var fell := false
+var fin_up := 0.0
+var fin_fwd := 0.0
 var res := 0.0         # авто-оценка эпизода
 var events: Array = [] # ручные похвалы, ждут подтверждения [шаг, значение]
 const PRAISE_WIN := 0.8 # сек: похвала засчитывается, только если он ещё в порядке через это время
@@ -290,6 +296,7 @@ func _build_body() -> void:
             d_kd.append(0.0)
             d_t.append(tm)
             d_g.append(sp["g"])
+            d_name.append(n + "." + a)
     n_dof = d_j.size()
     for rbm in bodies:
         total_mass += (rbm as RigidBody3D).mass
@@ -435,14 +442,21 @@ func tick() -> bool:
     _joint_state()
     var out := _policy(_sense(), cur_w)
     var e := 0.0
+    var g_on: bool = sim.gait_on
+    var gmix: float = sim.gait_mix
+    var gt := float(step) * dt
     for i in n_dof:
         var k: int = d_j[i]
         var pk: int = j_parent[k]
         var ax: Vector3 = jaxes[k][d_a[i]]
         var target := 0.0
+        var rng := maxf(absf(d_lo[i]), absf(d_hi[i]))
         if act[i]:
-            target = clampf(out[i] * maxf(absf(d_lo[i]), absf(d_hi[i])), d_lo[i], d_hi[i])
+            target = out[i] * rng
             e += absf(out[i])
+        if g_on:
+            target = target * gmix + sim.gait_off[i] + sim.gait_amp[i] * sin(TAU * (gt / sim.gait_period + sim.gait_ph[i]))
+        target = clampf(target, d_lo[i], d_hi[i])
         var F: Basis = j_frame[k]
         var axis0: Vector3 = F.x if d_a[i] == 0 else (F.y if d_a[i] == 1 else F.z)
         var ang: float = (jvec[k] as Vector3).dot(axis0)
@@ -468,6 +482,8 @@ func tick() -> bool:
         if lvl >= 2:
             var yaw := atan2(R.z.x, R.z.z)
             rb.apply_torque(Vector3(0, -yaw * kt * 0.5 - rb.angular_velocity.y * kt * 0.06, 0))
+    if sim.auto_on and step % 60 == 0:
+        _coach(R, h, rb)
     sum_up += maxf(R.y.y, 0.0)
     sum_h += h
     max_h = maxf(max_h, h)
@@ -478,6 +494,30 @@ func tick() -> bool:
     if not events.is_empty():
         _resolve_events(false)
     return step >= sim.ep_steps or fell or not pos.is_finite() or pos.length() > 400.0
+
+# автотренер: каждые 0.5 с оценивает действие по цели и даёт плюс/минус (оценка привязана к моменту)
+func _coach(R: Basis, h: float, rb: RigidBody3D) -> void:
+    var g: String = sim.goal
+    var up := R.y.y
+    var q := 0
+    var vz := rb.linear_velocity.z
+    var vh := Vector2(rb.linear_velocity.x, rb.linear_velocity.z).length()
+    if up < 0.6 or h < 0.6 * h0:
+        q = -1
+    elif g == "walk":
+        q = 1 if (up > 0.85 and vz > 0.4) else (-1 if vz < -0.2 else 0)
+    elif g == "jump":
+        q = 1 if h > h0 + 0.1 else 0
+    elif g == "fly":
+        q = 1 if h > h0 + 0.5 else (-1 if h < h0 else 0)
+    else:
+        q = 1 if (up > 0.9 and h > 0.85 * h0 and vh < 0.3) else 0
+    q_last = q
+    if q > 0:
+        q_good += 1
+    elif q < 0:
+        q_bad += 1
+    bonus += 0.3 * q
 
 func _ok_now() -> bool:
     var rb: RigidBody3D = bodies[root_i]
@@ -515,6 +555,9 @@ func give(v: float) -> void:
         flash("Молодец? (проверю)", Color(0.6, 1, 0.6))
 
 func finish() -> void:
+    var rbf: RigidBody3D = bodies[root_i]
+    fin_up = (rbf.global_transform.basis * root_rest_inv).y.y
+    fin_fwd = rbf.global_position.z - start.z
     res = score() if finite() else -100.0
     if not events.is_empty():
         _resolve_events(true)
