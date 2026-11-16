@@ -59,6 +59,7 @@ var sum_up := 0.0
 var sum_h := 0.0
 var max_h := 0.0
 var thr := 0.0
+var sum_im := 0.0
 var eff := 0.0
 var start := Vector3.ZERO
 var verdict := "старт"
@@ -434,6 +435,7 @@ func tick() -> bool:
         sum_h = 0.0
         max_h = 0.0
         thr = 0.0
+        sum_im = 0.0
         eff = 0.0
         start = (b_init[root_i] as Transform3D).origin
         return false
@@ -445,6 +447,7 @@ func tick() -> bool:
     var g_on: bool = sim.gait_on
     var gmix: float = sim.gait_mix
     var gt := float(step) * dt
+    var imit_err := 0.0
     for i in n_dof:
         var k: int = d_j[i]
         var pk: int = j_parent[k]
@@ -456,6 +459,12 @@ func tick() -> bool:
             e += absf(out[i])
         if g_on:
             target = target * gmix + sim.gait_off[i] + sim.gait_amp[i] * sin(TAU * (gt / sim.gait_period + sim.gait_ph[i]))
+        if g_on and sim.gait_used[i]:
+            var gtar: float = clampf(sim.gait_off[i] + sim.gait_amp[i] * sin(TAU * (gt / sim.gait_period + sim.gait_ph[i])), d_lo[i], d_hi[i])
+            var F2: Basis = j_frame[k]
+            var ax0: Vector3 = F2.x if d_a[i] == 0 else (F2.y if d_a[i] == 1 else F2.z)
+            var er: float = gtar - (jvec[k] as Vector3).dot(ax0)
+            imit_err += er * er
         target = clampf(target, d_lo[i], d_hi[i])
         var F: Basis = j_frame[k]
         var axis0: Vector3 = F.x if d_a[i] == 0 else (F.y if d_a[i] == 1 else F.z)
@@ -466,6 +475,8 @@ func tick() -> bool:
         bodies[k].apply_torque(tw)
         bodies[pk].apply_torque(-tw)
     eff += e / maxf(float(n_dof), 1.0)
+    if g_on and sim.gait_n > 0:
+        sum_im += exp(-imit_err / float(sim.gait_n) / 0.04)
     var rb: RigidBody3D = bodies[root_i]
     var f := Vector3(out[n_dof], out[n_dof + 1], out[n_dof + 2]) if act[n_dof] else Vector3.ZERO
     rb.apply_central_force(rb.global_transform.basis * (f * THRUST))
@@ -568,6 +579,12 @@ func finite() -> bool:
 
 func score() -> float:
     var goal: String = sim.goal
+    var imit := 0.0
+    if sim.gait_on and sim.gait_n > 0:
+        imit = 3.0 * sum_im / float(sim.ep_steps)   # награда за повторение эталонной походки/позы
+    return _base_score(goal) + imit
+
+func _base_score(goal: String) -> float:
     var n := float(sim.ep_steps)
     var upr := sum_up / n
     var hm := sum_h / n

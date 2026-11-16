@@ -63,6 +63,8 @@ var gait_ph: Array = []
 var gait_period := 1.0
 var gait_mix := 0.25      # сколько нейросеть добавляет поверх походки (0 = чистая походка)
 var gait_name := ""
+var gait_used: Array = []
+var gait_n := 0
 var gait_json := {}
 var gait_btn: Button
 const GAIT_SAVE := "user://gait.json"
@@ -399,6 +401,9 @@ func set_gait(d: Dictionary) -> String:
         ph.append(0.0)
     var unknown: Array = []
     var used := 0
+    var usedf: Array = []
+    usedf.resize(n_dof)
+    usedf.fill(false)
     for k in g["joints"]:
         if not names.has(str(k)):
             unknown.append(str(k))
@@ -408,9 +413,12 @@ func set_gait(d: Dictionary) -> String:
         off[i] = deg_to_rad(float(j.get("offset_deg", 0.0)))
         amp[i] = deg_to_rad(float(j.get("amp_deg", 0.0)))
         ph[i] = float(j.get("phase", 0.0))
+        usedf[i] = true
         used += 1
     if used == 0:
         return "ни одного известного сустава (примеры имён: thigh_l.x, calf_r.x). Неизвестные: %s" % ", ".join(unknown.slice(0, 5))
+    gait_used = usedf
+    gait_n = used
     gait_off = off
     gait_amp = amp
     gait_ph = ph
