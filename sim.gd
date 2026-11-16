@@ -524,7 +524,11 @@ func _panel_apply() -> void:
     var raw := panel_text.text
     var ga := raw.find("\"gait\"")
     if ga >= 0 and raw.find("\"joints\"") >= 0:
-        var jd = JSON.parse_string(raw.substr(raw.find("{")))
+        var jt := raw.substr(raw.find("{")).strip_edges()
+        var miss := jt.count("{") - jt.count("}")   # ИИ часто теряет закрывающие скобки
+        for _i in maxi(miss, 0):
+            jt += "}"
+        var jd = JSON.parse_string(jt)
         if jd is Dictionary:
             var er := set_gait(jd)
             if er == "":
