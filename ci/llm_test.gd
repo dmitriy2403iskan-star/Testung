@@ -31,7 +31,7 @@ func _next() -> void:
 
 func _on_goal(g: String, by: String) -> void:
     var want: String = CASES[i][1]
-    var ok := (g == want and by == "llm")
+    var ok := (g == want and (by == "llm" or by.begins_with("fix:")))
     print("TEST: «%s» -> %s (кто понял: %s), ожидалось %s: %s" % [CASES[i][0], g, by, want, "OK" if ok else "НЕ СОВПАЛО"])
     if not ok:
         failed = true

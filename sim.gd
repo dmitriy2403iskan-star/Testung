@@ -646,6 +646,8 @@ func _on_goal(g: String, by: String) -> void:
             _log("[color=orange]Нейронка не загружена, поняла по ключевым словам → %s[/color]" % GOALS[g])
         "timeout":
             _log("[color=orange]Нейронка не ответила за минуту, по ключевым словам → %s[/color]" % GOALS[g])
+        _ when by.begins_with("fix:"):
+            _log("[color=cyan]🧠 Нейронка предложила «%s», но в приказе однозначное слово → %s[/color]" % [by.trim_prefix("fix:"), GOALS[g]])
         _:
             _log("[color=orange]Нейронка ответила непонятно, по ключевым словам → %s[/color]" % GOALS[g])
     _set_goal(g)

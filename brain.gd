@@ -93,7 +93,13 @@ func _on_done(text: String) -> void:
     busy = false
     var j = JSON.parse_string(text)
     if j is Dictionary and j.has("goal") and str(j["goal"]) in ["walk", "jump", "fly", "stand"]:
-        goal_ready.emit(str(j["goal"]), "llm")
+        var raw := str(j["goal"])
+        var kw := goal_strict(cur_text)
+        if kw != "" and kw != raw:
+            # нейронка ошиблась, а в приказе есть однозначное слово: берём его (и честно сообщаем)
+            goal_ready.emit(kw, "fix:" + raw)
+        else:
+            goal_ready.emit(raw, "llm")
     else:
         goal_ready.emit(goal_rules(cur_text), "bad_answer")
 
@@ -105,15 +111,26 @@ func _goal_prompt(text: String) -> String:
     sys += "fly — лететь, летать, взлетай, парить, поднимись в воздух."
     return "<|im_start|>system\n%s<|im_end|>\n<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n" % [sys, text]
 
-func goal_rules(text: String) -> String:
+# однозначные слова; "" если ни одного нет
+func goal_strict(text: String) -> String:
     var t := text.to_lower()
-    if "прыг" in t or "скач" in t:
-        return "jump"
-    if "лет" in t or "взлет" in t or "взлёт" in t or "пари" in t:
-        return "fly"
-    if "стой" in t or "замри" in t or "стоя" in t or "устой" in t:
-        return "stand"
-    return "walk"
+    for k in ["прыг", "скач"]:
+        if k in t:
+            return "jump"
+    for k in ["лети", "летать", "лететь", "взлет", "взлёт", "парит"]:
+        if k in t:
+            return "fly"
+    for k in ["стой", "стоя", "замри", "устой", "не двигай"]:
+        if k in t:
+            return "stand"
+    for k in ["иди", "идти", "ходи", "ходьб", "шагай", "шагать", "беги", "бежать", "побеж", "вперёд", "вперед"]:
+        if k in t:
+            return "walk"
+    return ""
+
+func goal_rules(text: String) -> String:
+    var s := goal_strict(text)
+    return s if s != "" else "walk"
 
 func mode_text() -> String:
     if llm_ready:
