@@ -1,0 +1,49 @@
+name: build-auto-trainer
+on:
+  push:
+    branches: [auto-trainer-apk]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: barichello/godot-ci:4.2.2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare trainer build
+        run: |
+          cp project.godot /tmp/project.godot
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path("project.godot")
+          s=p.read_text()
+          s=s.replace('config/name="Человек"', 'config/name="Auto Trainer"')
+          s=s.replace('run/main_scene="res://sim.tscn"', 'run/main_scene="res://auto_trainer.tscn"')
+          p.write_text(s)
+          PY
+      - name: Setup Android
+        run: |
+          mkdir -p ~/.local/share/godot/export_templates ~/.config/godot
+          mv /root/.local/share/godot/export_templates/4.2.2.stable ~/.local/share/godot/export_templates/ || true
+          keytool -keyalg RSA -genkeypair -alias androiddebugkey -keypass android -keystore debug.keystore -storepass android -dname "CN=Android Debug,O=Android,C=US" -validity 9999 -deststoretype pkcs12
+          mv debug.keystore /root/debug.keystore
+          godot --headless --quiet --editor --quit || true
+          S=~/.config/godot/editor_settings-4.tres
+          printf '[gd_resource type="EditorSettings" format=3]\n\n[resource]\n' > $S
+          echo 'export/android/android_sdk_path = "/usr/lib/android-sdk"' >> $S
+          echo 'export/android/debug_keystore = "/root/debug.keystore"' >> $S
+          echo 'export/android/debug_keystore_user = "androiddebugkey"' >> $S
+          echo 'export/android/debug_keystore_pass = "android"' >> $S
+          J="$JAVA_HOME"
+          if [ -z "$J" ] || [ ! -x "$J/bin/javac" ]; then J=$(dirname "$(dirname "$(readlink -f "$(which javac)")")"); fi
+          echo "export/android/java_sdk_path = \"$J\"" >> $S
+      - name: Export APK
+        run: |
+          mkdir -p build
+          godot --headless --import || true
+          godot --headless --verbose --export-debug "Android" build/auto-trainer.apk
+          ls -lh build/auto-trainer.apk
+          cp /tmp/project.godot project.godot
+      - uses: actions/upload-artifact@v4
+        with:
+          name: auto-trainer-apk
+          path: build/auto-trainer.apk
