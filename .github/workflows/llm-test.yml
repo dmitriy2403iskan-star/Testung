@@ -31,7 +31,7 @@ jobs:
           chmod +x Godot_v4.2.2-stable_linux.x86_64
       - name: Model
         run: |
-          curl -sSL -o model.gguf "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+          curl -sSL -o model.gguf "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf"
           ls -la model.gguf
       - name: Test project
         run: |
@@ -59,7 +59,7 @@ jobs:
           Brain="*res://brain.gd"
           EOF2
           mkdir -p ~/.local/share/godot/app_userdata/llmtest
-          cp model.gguf ~/.local/share/godot/app_userdata/llmtest/model.gguf
+          cp model.gguf ~/.local/share/godot/app_userdata/llmtest/model_1_5b.gguf
           ./Godot_v4.2.2-stable_linux.x86_64 --headless --path t --import || true
           ./Godot_v4.2.2-stable_linux.x86_64 --headless --path t 2>&1 | tee test.log
           grep -q "TEST RESULT: OK" test.log

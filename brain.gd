@@ -5,9 +5,9 @@ signal status(text)
 signal goal_ready(goal, by)
 var last_status := ""
 
-const MODEL_URL := "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"
-const MODEL := "user://model.gguf"
-const PART := "user://model.part"
+const MODEL_URL := "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/main/qwen2.5-1.5b-instruct-q4_k_m.gguf"
+const MODEL := "user://model_1_5b.gguf"
+const PART := "user://model_1_5b.part"
 const GOAL_SCHEMA := '{"type":"object","properties":{"goal":{"type":"string","enum":["walk","jump","fly","stand"]}},"required":["goal"]}'
 
 var llm = null
@@ -49,7 +49,7 @@ func _download() -> void:
     http.request_completed.connect(_on_dl)
     add_child(http)
     http.request(MODEL_URL)
-    _st("Качаю модель нейронки (~400 МБ). Пока цели понимаю по ключевым словам.")
+    _st("Качаю модель нейронки (~1 ГБ). Пока цели понимаю по ключевым словам.")
 
 func _on_dl(_r, code: int, _h, _b) -> void:
     if code == 200:
