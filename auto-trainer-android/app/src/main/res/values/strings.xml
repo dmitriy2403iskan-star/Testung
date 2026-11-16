@@ -1,4 +1,4 @@
 <resources>
-    <string name="app_name">Auto Trainer</string>
-    <string name="service_description">Управление и наблюдение за приложением тренировки человека.</string>
+<string name="app_name">Auto Trainer</string>
+<string name="service_description">Наблюдение за экраном собственного приложения обучения.</string>
 </resources>
