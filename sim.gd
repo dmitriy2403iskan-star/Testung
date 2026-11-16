@@ -531,7 +531,11 @@ func _panel_apply() -> void:
                 panel_layer.visible = false
                 gait_on = false
                 _gait_toggle()
-                _set_goal("walk")
+                var moving := false
+                for v in gait_amp:
+                    if absf(float(v)) > 0.001:
+                        moving = true
+                _set_goal("walk" if moving else "stand")
                 if support == 0:
                     set_support(2)
             else:
