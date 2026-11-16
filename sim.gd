@@ -30,6 +30,14 @@ var agent_clones: Array = []
 var agent_skeletons: Array = []
 var agent_labels: Array = []
 var agent_quality := 0.0
+var agent_skills: Array = []
+var agent_weights: Array = []
+var agent_cur_weights: Array = []
+var agent_best: Array = []
+var agent_eps: Array = []
+var freeze_mode := true
+var freeze_snapshot: Array = []
+var freeze_target: Array = []
 var last_quality := 0.0
 var last_good_quality := -1.0
 var last_good_w := PackedFloat32Array()
@@ -119,6 +127,7 @@ func _ready() -> void:
     _build_world()
     _build_body()
     _build_training_agents()
+    _init_agent_learners()
     var main_label := Label3D.new()
     main_label.text = "УЧЕНИК 1"
     main_label.font_size = 64
@@ -126,6 +135,7 @@ func _ready() -> void:
     main_label.position = Vector3(0, 1.75, 0)
     human.add_child(main_label)
     _refresh_active()
+    _snapshot_freeze()
     n_in = 17 + n_dof
     n_out = n_dof + 3
     n_w = n_in * N_HID + N_HID + N_HID * n_out + n_out
@@ -301,13 +311,62 @@ func _shape_for(n: String, hp: Vector3, tp: Vector3) -> Dictionary:
     return {"shape": _cap(r, L), "xf": Transform3D(Basis(q), mid), "coll": coll}
 
 # ---------- тело человека ----------
+func _init_agent_learners() -> void:
+    agent_skills.resize(4)
+    agent_weights.resize(4)
+    agent_cur_weights.resize(4)
+    agent_best.resize(4)
+    agent_eps.resize(4)
+    for i in 4:
+        agent_skills[i] = {}
+        var aw := PackedFloat32Array()
+        aw.resize(n_w)
+        for k in n_w:
+            aw[k] = randfn(0.0, 0.03)
+        agent_weights[i] = aw
+        agent_cur_weights[i] = aw.duplicate()
+        agent_best[i] = -1e9
+        agent_eps[i] = 0
+
+func _agent_pos(i: int) -> Vector3:
+    var spots := [Vector3(-3.0, LIFT, 0.0), Vector3(0.0, LIFT, 0.0), Vector3(3.0, LIFT, 0.0), Vector3(0.0, LIFT, 3.0)]
+    return spots[clampi(i, 0, 3)]
+
+func _snapshot_freeze() -> void:
+    freeze_snapshot = []
+    freeze_target = []
+    for k in bodies.size():
+        freeze_snapshot.append((bodies[k] as RigidBody3D).global_transform)
+        freeze_target.append((bodies[k] as RigidBody3D).global_transform)
+
+func _apply_freeze_support() -> void:
+    # Training scaffold: no gravity-like drifting between actions. Every physical
+    # segment is softly returned to the pose reached by the learner.
+    if not freeze_mode or freeze_snapshot.size() != bodies.size():
+        return
+    for k in bodies.size():
+        var rb: RigidBody3D = bodies[k]
+        var target: Transform3D = freeze_target[k]
+        var dp := target.origin - rb.global_position
+        rb.apply_central_force(dp * 900.0 - rb.linear_velocity * 80.0)
+        var q := (target.basis * rb.global_transform.basis.inverse()).get_rotation_quaternion()
+        var axis := Vector3(q.x, q.y, q.z) * (2.0 if q.w >= 0.0 else -2.0)
+        rb.apply_torque(axis * 700.0 - rb.angular_velocity * 55.0)
+
+func _toggle_freeze() -> void:
+    freeze_mode = not freeze_mode
+    if freeze_mode:
+        _snapshot_freeze()
+        _log("[color=cyan]Фиксация движений: ВКЛ — поза удерживается между действиями.[/color]")
+    else:
+        _log("[color=orange]Фиксация движений: ВЫКЛ — физика свободная.[/color]")
 func _build_training_agents() -> void:
     # Four training slots: one active physical learner + three visual observers.
     # Observers mirror the active pose so the same movement can be judged side-by-side.
     for i in 3:
         var inst := (load("res://human.glb") as PackedScene).instantiate()
         add_child(inst)
-        inst.position = Vector3((i - 1.5) * 1.25, LIFT, 1.8)
+        inst.position = _agent_pos(i + 1)
         inst.scale = Vector3.ONE * 0.92
         var ss := inst.find_child("Skeleton3D", true, false)
         agent_clones.append(inst)
@@ -328,7 +387,7 @@ func _mirror_training_agents() -> void:
     for n in agent_skeletons.size():
         var ss: Skeleton3D = agent_skeletons[n]
         var inst: Node3D = agent_clones[n]
-        inst.position = Vector3((n - 1) * 1.5, LIFT, 1.8)
+        inst.position = _agent_pos(n + 1)
         for k in bodies.size():
             ss.set_bone_global_pose_override(b_bone[k], inv * ((bodies[k] as RigidBody3D).global_transform * (b_offset[k] as Transform3D)), 1.0, true)
         agent_labels[n].text = "УЧЕНИК %d  %s" % [n + 2, _quality_mark(agent_quality)]
@@ -345,7 +404,7 @@ func _quality_mark(q: float) -> String:
 func _build_body() -> void:
     human = (load("res://human.glb") as PackedScene).instantiate()
     add_child(human)
-    human.position = Vector3(0, LIFT, 0)
+    human.position = _agent_pos(0)
     sk = human.find_child("Skeleton3D", true, false)
     var idx_of := {}   # bone -> индекс тела
     for i in sk.get_bone_count():
@@ -585,6 +644,8 @@ func _physics_process(_d: float) -> void:
         start = (b_init[root_i] as Transform3D).origin
         return
     _joint_state()
+    var learner_index := clampi(int(eps) % 4, 0, 3)
+    cur_w = agent_cur_weights[learner_index]
     var out := _policy(_sense(), cur_w)
     var e := 0.0
     for i in n_dof:
@@ -608,6 +669,7 @@ func _physics_process(_d: float) -> void:
     var f := Vector3(out[n_dof], out[n_dof + 1], out[n_dof + 2]) if act[n_dof] else Vector3.ZERO
     rb.apply_central_force(rb.global_transform.basis * (f * THRUST))
     var R: Basis = rb.global_transform.basis * root_rest_inv
+    _apply_freeze_support()
     if assist:
         var up := R.y
         rb.apply_torque(up.cross(Vector3.UP) * 500.0 - rb.angular_velocity * 60.0)
@@ -714,7 +776,10 @@ func _end_episode() -> void:
             sigma = maxf(sigma * 0.9, 0.01)
             stall = 0
     bonus = 0.0
-    cur_w = _mutate()
+    var li := clampi(int(eps - 1) % 4, 0, 3)
+    agent_weights[li] = w.duplicate()
+    agent_cur_weights[li] = _mutate()
+    cur_w = agent_cur_weights[li].duplicate()
     step = -1
 
 func _set_goal(g: String) -> void:
@@ -920,6 +985,7 @@ func _build_ui() -> void:
     r2.add_child(speed_btn)
     assist_btn = _btn("Опора ✗", _assist)
     r2.add_child(assist_btn)
+    r2.add_child(_btn("Фиксация ✓", _toggle_freeze))
     r2.add_child(_btn("Камера ↔", _toggle_free_cam))
     screen_btn = _btn("Экран ✓", _screen)
     r2.add_child(screen_btn)
