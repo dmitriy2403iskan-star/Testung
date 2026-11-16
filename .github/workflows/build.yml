@@ -41,14 +41,16 @@ jobs:
           ls -la llm/build/*.so
           echo "--- NEEDED ---"; $T/bin/llvm-readelf -d $L | grep -i "NEEDED\|SONAME" || true
           echo "--- entry symbol ---"; $T/bin/llvm-nm -D --defined-only $L | grep -i "llm_library_init" || echo "NO llm_library_init!"
-          cp $T/sysroot/usr/lib/aarch64-linux-android/libc++_shared.so llm/build/ || true
-          ls -la llm/build/libc++_shared.so || true
+          OMP=$(find $ANDROID_NDK_HOME -name libomp.so -path "*aarch64*" | head -1)
+          echo "libomp: $OMP"
+          cp "$OMP" llm/build/libomp.so
+          ls -la llm/build/libomp.so
       - uses: actions/upload-artifact@v4
         with:
           name: android-llm-lib
           path: |
             llm/build/libgodot_llm.android.release.aarch64.so
-            llm/build/libc++_shared.so
+            llm/build/libomp.so
           if-no-files-found: error
 
   apk:
@@ -77,8 +79,8 @@ jobs:
           android.release.arm64 = "bin/libgodot_llm.android.release.aarch64.so"
 
           [dependencies]
-          android.debug.arm64 = {"res://addons/godot_llm/bin/libc++_shared.so": ""}
-          android.release.arm64 = {"res://addons/godot_llm/bin/libc++_shared.so": ""}
+          android.debug.arm64 = {"res://addons/godot_llm/bin/libomp.so": ""}
+          android.release.arm64 = {"res://addons/godot_llm/bin/libomp.so": ""}
           EOF
             echo "Addon OK:"; find addons -type f
           else
