@@ -21,6 +21,21 @@ var cam: Camera3D
 var cam_yaw := 143.0     # вращение вокруг человека (градусы)
 var cam_pitch := 12.0
 var cam_dist := 4.0
+var free_cam := false
+var free_cam_pos := Vector3(3.5, 2.2, 5.5)
+var free_cam_yaw := 145.0
+var free_cam_pitch := -12.0
+var cam_move_speed := 5.0
+var agent_clones: Array = []
+var agent_skeletons: Array = []
+var agent_labels: Array = []
+var agent_quality := 0.0
+var last_quality := 0.0
+var last_good_quality := -1.0
+var last_good_w := PackedFloat32Array()
+var reward_trace: Array = []
+var action_lock := true
+var reward_decay := 0.0
 var touches := {}
 var pinch_prev := 0.0
 var menu_box: VBoxContainer
@@ -103,6 +118,7 @@ func _ready() -> void:
     Engine.max_physics_steps_per_frame = 64
     _build_world()
     _build_body()
+    _build_training_agents()
     _refresh_active()
     n_in = 17 + n_dof
     n_out = n_dof + 3
@@ -279,6 +295,47 @@ func _shape_for(n: String, hp: Vector3, tp: Vector3) -> Dictionary:
     return {"shape": _cap(r, L), "xf": Transform3D(Basis(q), mid), "coll": coll}
 
 # ---------- тело человека ----------
+func _build_training_agents() -> void:
+    # Four training slots: one active physical learner + three visual observers.
+    # Observers mirror the active pose so the same movement can be judged side-by-side.
+    for i in 4:
+        var inst := (load("res://human.glb") as PackedScene).instantiate()
+        add_child(inst)
+        inst.position = Vector3((i - 1.5) * 1.25, LIFT, 1.8)
+        inst.scale = Vector3.ONE * 0.92
+        var ss := inst.find_child("Skeleton3D", true, false)
+        agent_clones.append(inst)
+        agent_skeletons.append(ss)
+        var lab := Label3D.new()
+        lab.text = "УЧЕНИК %d" % (i + 1)
+        lab.font_size = 64
+        lab.outline_size = 10
+        lab.modulate = Color(1, 1, 1, 1)
+        lab.position = Vector3(0, 1.75, 0)
+        inst.add_child(lab)
+        agent_labels.append(lab)
+
+func _mirror_training_agents() -> void:
+    if agent_skeletons.is_empty():
+        return
+    var inv := sk.global_transform.affine_inverse()
+    for n in agent_skeletons.size():
+        var ss: Skeleton3D = agent_skeletons[n]
+        var inst: Node3D = agent_clones[n]
+        inst.position = Vector3((n - 1.5) * 1.25, LIFT, 1.8)
+        for k in bodies.size():
+            ss.set_bone_global_pose_override(b_bone[k], inv * ((bodies[k] as RigidBody3D).global_transform * (b_offset[k] as Transform3D)), 1.0, true)
+        agent_labels[n].text = "УЧЕНИК %d  %s" % [n + 1, _quality_mark(agent_quality)]
+
+func _quality_mark(q: float) -> String:
+    if q >= 0.82:
+        return "✓ ОТЛИЧНО"
+    if q >= 0.62:
+        return "✓ ХОРОШО"
+    if q >= 0.40:
+        return "… СТАБИЛЬНО"
+    return "⚠ НЕ ОЧЕНЬ"
+
 func _build_body() -> void:
     human = (load("res://human.glb") as PackedScene).instantiate()
     add_child(human)
@@ -548,7 +605,13 @@ func _physics_process(_d: float) -> void:
     if assist:
         var up := R.y
         rb.apply_torque(up.cross(Vector3.UP) * 500.0 - rb.angular_velocity * 60.0)
+        # Support mode: keeps the learner near its action checkpoint while still allowing joints to move.
+        var anchor := start
+        var delta := anchor - rb.global_position
+        rb.apply_central_force(Vector3(delta.x, 0.0, delta.z) * 180.0 - rb.linear_velocity * 25.0)
     var h := rb.global_position.y
+    var live_reward := _positive_reward()
+    bonus += live_reward
     sum_up += maxf(R.y.y, 0.0)
     sum_h += h
     max_h = maxf(max_h, h)
@@ -560,8 +623,35 @@ func _physics_process(_d: float) -> void:
         _end_episode()
 
 # ---------- награда и обучение ----------
+func _quality_now() -> float:
+    var rb: RigidBody3D = bodies[root_i]
+    var R: Basis = rb.global_transform.basis * root_rest_inv
+    var upright := clampf((R.y.y + 1.0) * 0.5, 0.0, 1.0)
+    var height := clampf(rb.global_position.y / maxf(h0, 0.01), 0.0, 1.2) / 1.2
+    var angular := clampf(1.0 - rb.angular_velocity.length() * 0.12, 0.0, 1.0)
+    var feet := 0.0
+    for f in feet_i:
+        feet += 1.0 if bodies[f].global_position.y < 0.12 else 0.0
+    feet = feet / maxf(float(feet_i.size()), 1.0)
+    return clampf(0.45 * upright + 0.30 * height + 0.15 * angular + 0.10 * feet, 0.0, 1.0)
+
+func _positive_reward() -> float:
+    var q := _quality_now()
+    var delta := q - last_quality
+    last_quality = q
+    agent_quality = q
+    if q > last_good_quality:
+        last_good_quality = q
+        last_good_w = cur_w.duplicate()
+    # Reward only progress / good states. A fall does not create a useful positive target.
+    var r := maxf(0.0, delta) * 25.0
+    reward_trace.append({"step": step, "quality": snappedf(q, 0.001), "reward": snappedf(r, 0.001)})
+    if reward_trace.size() > 240:
+        reward_trace.pop_front()
+    return r
+
 func _score() -> float:
-    var n := float(ep_steps)
+    var n := float(maxi(ep_steps, 1))
     var upr := sum_up / n
     var hm := sum_h / n
     var th := thr / n
@@ -569,13 +659,14 @@ func _score() -> float:
     var p: Vector3 = bodies[root_i].global_position
     var fwd := p.z - start.z
     var drift := Vector2(p.x - start.x, p.z - start.z).length()
+    var q := _quality_now()
     if goal == "walk":
-        return 3.0 * fwd + 1.5 * upr + clampf(hm / h0, 0.0, 1.1) - 0.3 * ef - 0.5 * th
+        return 4.0 * fwd + 2.0 * upr + 2.0 * q + clampf(hm / h0, 0.0, 1.1) - 0.25 * ef - 0.35 * th
     if goal == "jump":
-        return 4.0 * maxf(0.0, max_h - (h0 + 0.3)) + upr + clampf(hm / h0, 0.0, 1.1) - 0.3 * ef - th
+        return 4.0 * maxf(0.0, max_h - (h0 + 0.3)) + 1.5 * upr + q - 0.25 * ef - th
     if goal == "fly":
-        return clampf(hm, 0.0, 8.0) + 0.5 * upr - 0.2 * ef
-    return 2.0 * upr + 3.0 * clampf(hm / h0, 0.0, 1.1) - 0.3 * ef - th - 0.5 * drift
+        return clampf(hm, 0.0, 8.0) + 0.5 * upr + q - 0.2 * ef
+    return 3.0 * upr + 4.0 * clampf(hm / h0, 0.0, 1.1) + 5.0 * q - 0.2 * ef - 0.4 * th - 0.3 * drift
 
 func _mutate() -> PackedFloat32Array:
     var c := w.duplicate()
@@ -823,6 +914,7 @@ func _build_ui() -> void:
     r2.add_child(speed_btn)
     assist_btn = _btn("Опора ✗", _assist)
     r2.add_child(assist_btn)
+    r2.add_child(_btn("Камера ↔", _toggle_free_cam))
     screen_btn = _btn("Экран ✓", _screen)
     r2.add_child(screen_btn)
     var r3 := HBoxContainer.new()
@@ -916,8 +1008,19 @@ func _cmd(text: String) -> void:
     brain.ask_goal(text)
 
 func _reward(v: float) -> void:
-    bonus += v
-    _log("[color=%s]%s[/color]" % ["lime" if v > 0 else "tomato", "Молодец!" if v > 0 else "Плохо!"])
+    if v > 0.0:
+        var q := _quality_now()
+        agent_quality = q
+        last_good_quality = maxf(last_good_quality, q)
+        last_good_w = cur_w.duplicate()
+        w = cur_w.duplicate()
+        reward_trace.append({"step": step, "quality": snappedf(q, 0.001), "reward": v})
+        bonus += v
+        _log("[color=lime]✓ Молодец! Поза сохранена: качество %.2f[/color]" % q)
+    else:
+        # Negative feedback is logged, but never destroys the last positively rewarded state.
+        bonus += v * 0.25
+        _log("[color=orange]Отметка: неудачное действие. Последняя хорошая поза сохранена.[/color]")
 
 func _speed() -> void:
     speed_i = (speed_i + 1) % SPEEDS.size()
@@ -938,6 +1041,13 @@ func _pause() -> void:
 
 # ---------- камера: вращение пальцем / мышью, щипок или колесо - приближение ----------
 func _cam_update() -> void:
+    if free_cam:
+        cam.position = free_cam_pos
+        var yaw := deg_to_rad(free_cam_yaw)
+        var pit := deg_to_rad(free_cam_pitch)
+        var dir := Vector3(sin(yaw) * cos(pit), sin(pit), cos(yaw) * cos(pit))
+        cam.look_at(cam.position + dir)
+        return
     var yaw := deg_to_rad(cam_yaw)
     var pit := deg_to_rad(cam_pitch)
     var tgt := cam_sm + Vector3(0, 0.9, 0)
@@ -945,9 +1055,22 @@ func _cam_update() -> void:
     cam.look_at(tgt)
 
 func _cam_reset() -> void:
+    free_cam = false
     cam_yaw = 143.0
     cam_pitch = 12.0
     cam_dist = 4.0
+    free_cam_pos = Vector3(3.5, 2.2, 5.5)
+    free_cam_yaw = 145.0
+    free_cam_pitch = -12.0
+    _cam_update()
+
+func _toggle_free_cam() -> void:
+    free_cam = not free_cam
+    if free_cam:
+        free_cam_pos = cam.global_position
+        free_cam_yaw = cam_yaw
+        free_cam_pitch = cam_pitch
+    _log("[color=cyan]Свободная камера: %s[/color]" % ("ВКЛ" if free_cam else "ВЫКЛ"))
 
 func _cam_free_area(p: Vector2) -> bool:
     if panel_layer.visible:
@@ -977,8 +1100,25 @@ func _unhandled_input(e: InputEvent) -> void:
             cam_pitch = clampf(cam_pitch + e.relative.y * 0.25, 2.0, 85.0)
     elif e is InputEventMouseMotion and not DisplayServer.is_touchscreen_available():
         if e.button_mask & MOUSE_BUTTON_MASK_LEFT and _cam_free_area(e.position):
-            cam_yaw -= e.relative.x * 0.35
-            cam_pitch = clampf(cam_pitch + e.relative.y * 0.25, 2.0, 85.0)
+            if free_cam:
+                free_cam_yaw -= e.relative.x * 0.35
+                free_cam_pitch = clampf(free_cam_pitch + e.relative.y * 0.25, -85.0, 85.0)
+            else:
+                cam_yaw -= e.relative.x * 0.35
+                cam_pitch = clampf(cam_pitch + e.relative.y * 0.25, 2.0, 85.0)
+    elif e is InputEventKey and e.pressed and free_cam:
+        var dir := Vector3.ZERO
+        if e.keycode == KEY_W: dir.z -= 1.0
+        if e.keycode == KEY_S: dir.z += 1.0
+        if e.keycode == KEY_A: dir.x -= 1.0
+        if e.keycode == KEY_D: dir.x += 1.0
+        if e.keycode == KEY_Q: dir.y -= 1.0
+        if e.keycode == KEY_E: dir.y += 1.0
+        if dir != Vector3.ZERO:
+            var yaw := deg_to_rad(free_cam_yaw)
+            var forward := Vector3(sin(yaw), 0.0, cos(yaw))
+            var right := Vector3(cos(yaw), 0.0, -sin(yaw))
+            free_cam_pos += (right * dir.x + forward * dir.z + Vector3.UP * dir.y) * cam_move_speed * 0.08
     elif e is InputEventMouseButton and e.pressed:
         if e.button_index == MOUSE_BUTTON_WHEEL_UP:
             cam_dist = clampf(cam_dist * 0.9, 1.2, 15.0)
@@ -996,6 +1136,7 @@ func _process(_d: float) -> void:
         var tgt := Vector3(tp.x, 0.0, tp.z)
         cam_sm = cam_sm.lerp(tgt, 1.0 - exp(-rd * 3.0))
     _cam_update()
+    _mirror_training_agents()
     var inv := sk.global_transform.affine_inverse()
     for k in bodies.size():
         var bw: Transform3D = (bodies[k] as RigidBody3D).global_transform * (b_offset[k] as Transform3D)
