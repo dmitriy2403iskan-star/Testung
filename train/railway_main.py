@@ -35,14 +35,25 @@ def rec_job(which, secs, snap):
         REC_ST.update(state="идёт", msg="Рендерю %d с видео (%s). Это занимает несколько минут." % (secs, which), t=time.time())
         rec_prepare()
         out = os.path.join(REC, "out.avi")
+        if os.path.exists(out):
+            os.remove(out)
+        if not (shutil.which("ffmpeg") and shutil.which("xvfb-run")):   # пакеты не поставились при старте
+            REC_ST["msg"] = "Ставлю xvfb и ffmpeg (1-2 мин)..."
+            r = subprocess.run("apt-get update -qq; DEBIAN_FRONTEND=noninteractive apt-get install -y xvfb ffmpeg "
+                               "libgl1-mesa-dri libglu1-mesa libgl1 libegl1 libxcursor1 libxinerama1 libxrandr2 libxi6",
+                               shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            if not (shutil.which("ffmpeg") and shutil.which("xvfb-run")):
+                raise RuntimeError("apt не поставил пакеты: " + r.stdout[-400:])
+        REC_ST["msg"] = "Рендерю %d с видео (%s). Это занимает несколько минут." % (secs, which)
         env = dict(os.environ, NO_LLM="1", REPLAY_FILE=snap, FRAMES=str(secs * 30),
                    XDG_DATA_HOME=os.path.join(REC, "xdg"), XDG_CONFIG_HOME=os.path.join(REC, "xdg", "cfg"))
         cmd = ('nice -n 5 xvfb-run -a -s "-screen 0 720x1280x24" "%s" --rendering-driver opengl3 '
-               '--write-movie out.avi --fixed-fps 30 --resolution 540x960' % kaggle_run.get_godot())
-        r = subprocess.run(cmd, shell=True, cwd=REC, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=3 * 3600)
-        if not shutil.which("ffmpeg"):   # на случай, если при старте контейнера пакет не поставился
-            REC_ST["msg"] = "Ставлю ffmpeg..."
-            subprocess.run("apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg", shell=True, check=True)
+               '--write-movie %s --fixed-fps 30 --resolution 540x960' % (kaggle_run.get_godot(), out))
+        r = subprocess.run(cmd, shell=True, cwd=REC, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           text=True, timeout=3 * 3600)
+        open(os.path.join(REC, "render.log"), "w").write(r.stdout)
+        if not os.path.exists(out):
+            raise RuntimeError("Godot не создал видео (код %s): %s" % (r.returncode, r.stdout[-500:]))
         tmp = os.path.join(REC, "video_new.mp4")
         subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", out, "-c:v", "libx264", "-pix_fmt", "yuv420p",
                         "-crf", "26", tmp], check=True)
