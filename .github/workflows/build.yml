@@ -3,27 +3,41 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   llm:
     # Собираем нейронку (godot-llm / llama.cpp) под Android arm64 по рецепту из CI самого аддона
     runs-on: ubuntu-22.04
     steps:
+      - name: Кэш собранной нейронки
+        id: lc
+        uses: actions/cache/restore@v4
+        with:
+          key: llm-lib-fixed-1
+          path: |
+            llm/build/libgodot_llm.android.release.aarch64.so
+            llm/build/libomp.so
       - uses: nttld/setup-ndk@v1
+        if: steps.lc.outputs.cache-hit != 'true'
         id: setup-ndk
         with:
           ndk-version: r26d
           link-to-sdk: true
       - name: Clone godot-llm
+        if: steps.lc.outputs.cache-hit != 'true'
         run: |
           git clone https://github.com/Adriankhl/godot-llm llm
           cd llm
           git checkout fb12d7d9c0ff6274bb6c5267e86004482befc842
           git submodule update --init --recursive
       - name: Dependencies
+        if: steps.lc.outputs.cache-hit != 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential ninja-build
       - name: Build Android library
+        if: steps.lc.outputs.cache-hit != 'true'
         working-directory: llm
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
@@ -33,6 +47,7 @@ jobs:
           cmake .. --preset android-cpu-release
           ninja -j $(nproc)
       - name: Inspect library
+        if: steps.lc.outputs.cache-hit != 'true'
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
@@ -45,14 +60,14 @@ jobs:
           echo "libomp: $OMP"
           cp "$OMP" llm/build/libomp.so
           ls -la llm/build/libomp.so
-      - uses: actions/upload-artifact@v4
+      - name: Сохранить в кэш
+        if: steps.lc.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
         with:
-          name: android-llm-lib
-          retention-days: 1
+          key: llm-lib-fixed-1
           path: |
             llm/build/libgodot_llm.android.release.aarch64.so
             llm/build/libomp.so
-          if-no-files-found: error
 
   apk:
     needs: llm
@@ -61,12 +76,18 @@ jobs:
     container: barichello/godot-ci:4.2.2
     steps:
       - uses: actions/checkout@v4
-      - name: Add godot-llm addon
-        uses: actions/download-artifact@v4
-        continue-on-error: true
+      - name: Add godot-llm addon (из кэша)
+        uses: actions/cache/restore@v4
         with:
-          name: android-llm-lib
-          path: addons/godot_llm/bin
+          key: llm-lib-fixed-1
+          path: |
+            llm/build/libgodot_llm.android.release.aarch64.so
+            llm/build/libomp.so
+          fail-on-cache-miss: true
+      - name: Положить библиотеки в аддон
+        run: |
+          mkdir -p addons/godot_llm/bin
+          cp llm/build/libgodot_llm.android.release.aarch64.so llm/build/libomp.so addons/godot_llm/bin/
       - name: Write gdextension
         run: |
           if [ -f addons/godot_llm/bin/libgodot_llm.android.release.aarch64.so ]; then
@@ -127,7 +148,19 @@ jobs:
           unzip -l build/komandir.apk | grep -i "\.so\|lib/" || true
           ls -la build/
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: komandir-apk
-          retention-days: 7
+          retention-days: 3
           path: build/komandir.apk
+      - name: APK в Releases (не зависит от квоты артефактов)
+        run: |
+          [ -f build/komandir.apk ] || { echo "нет apk"; exit 1; }
+          API=https://api.github.com/repos/${{ github.repository }}
+          H="Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}"
+          old=$(curl -sS -H "$H" $API/releases/tags/latest-apk | sed -n 's/^  "id": *\([0-9]*\),.*/\1/p' | head -1)
+          [ -n "$old" ] && curl -sS -X DELETE -H "$H" $API/releases/$old
+          curl -sS -X DELETE -H "$H" $API/git/refs/tags/latest-apk
+          rid=$(curl -sS -X POST -H "$H" $API/releases -d "{\"tag_name\":\"latest-apk\",\"target_commitish\":\"$GITHUB_SHA\",\"name\":\"APK (последняя сборка)\",\"prerelease\":true,\"body\":\"Сборка $GITHUB_SHA\"}" | sed -n 's/^  "id": *\([0-9]*\),.*/\1/p' | head -1)
+          echo "release id: $rid"
+          curl -sS -X POST -H "$H" -H "Content-Type: application/vnd.android.package-archive" --data-binary @build/komandir.apk "https://uploads.github.com/repos/${{ github.repository }}/releases/$rid/assets?name=komandir.apk" | head -c 300
