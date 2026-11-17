@@ -418,6 +418,21 @@ func _on_goal(g: String, by: String) -> void:
             _log("[color=orange]Нейронка ответила непонятно, по ключевым словам → %s[/color]" % GOALS[g])
     _set_goal(g)
 
+# статус серверного предобучения (файл обновляется каждые 4 минуты из GitHub Actions)
+func _train_status() -> void:
+    var hr := HTTPRequest.new()
+    add_child(hr)
+    hr.request_completed.connect(func(res, code, _h, body):
+        if code == 200:
+            _log("[color=cyan]%s[/color]" % body.get_string_from_utf8())
+        else:
+            _log("[color=tomato]Статус пока недоступен (код %d). Он появляется через ~5 минут после старта обучения.[/color]" % code)
+        hr.queue_free())
+    var err := hr.request("https://raw.githubusercontent.com/dmitriy2403iskan-star/Testung/train-status/STATUS.md?t=%d" % Time.get_ticks_msec())
+    if err != OK:
+        _log("[color=tomato]Нет интернета?[/color]")
+        hr.queue_free()
+
 # ---------- походка из файла (может быть написана любым ИИ, см. docs/) ----------
 # формат: {"gait": {"name": "...", "period": 1.0, "mix": 0.25,
 #          "joints": {"thigh_l.x": {"offset_deg": 0, "amp_deg": 25, "phase": 0.0}, ...}}}
@@ -731,6 +746,7 @@ func _build_ui() -> void:
     gait_btn = _btn("Походка ✗", _gait_toggle)
     r5.add_child(gait_btn)
     r5.add_child(_btn("Предобуч.", func(): _load_pretrained(true)))
+    r5.add_child(_btn("Статус", _train_status))
     var rg: HBoxContainer
     var gi := 0
     for g in groups:

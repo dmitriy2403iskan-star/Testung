@@ -31,11 +31,32 @@ jobs:
             XDG_DATA_HOME=$PWD/xdg_$1 XDG_CONFIG_HOME=$PWD/xdg_$1/cfg GOAL=$2 GAITFILE=$3 SUP=$4 OUT=$PWD/out/$1.json \
               godot --headless --fixed-fps 240 > out/$1.log 2>&1
           }
+          # статус каждые 5 минут -> ветка train-status (файл STATUS.md), его читает кнопка «Статус» в приложении
+          export GH_TOKEN=${{ secrets.GITHUB_TOKEN }}
+          mkdir -p /tmp/st && (cd /tmp/st && git init -q && git config user.name trainer-bot && git config user.email bot@users.noreply.github.com && git checkout -q -b train-status && git remote add origin https://x-access-token:$GH_TOKEN@github.com/${{ github.repository }}.git)
+          (
+            START=$(date +%s)
+            while true; do
+              sleep 240
+              {
+                echo "ОБУЧЕНИЕ (сервер GitHub). Идёт: $(( ($(date +%s) - START) / 60 )) мин из ~250. Обновлено: $(date -u +%H:%M) UTC"
+                for f in out/*.log; do
+                  n=$(basename $f .log)
+                  echo "$n: $(grep '^T=' $f | tail -1)"
+                done
+                echo "(подвес sup: 3 сильный ... 0 нет; mastered = сколько раз освоено без подвеса)"
+              } > /tmp/st/STATUS.md
+              (cd /tmp/st && git add STATUS.md && git commit -qm "status" && git push -qf origin train-status) >/dev/null 2>&1 || true
+            done
+          ) &
+          STATUS_PID=$!
           run stand_a stand ci/gait_stand.json 3 &
           run stand_b stand ci/gait_stand.json 3 &
           run walk_a walk ci/gait_walk.json 3 &
           run walk_b walk ci/gait_walk.json 3 &
-          wait
+          wait $(jobs -p | grep -v "^$STATUS_PID$")
+          kill $STATUS_PID 2>/dev/null || true
+          echo "ОБУЧЕНИЕ ЗАВЕРШЕНО $(date -u +%H:%M) UTC" > /tmp/st/STATUS.md; for f in out/*.log; do echo "$(basename $f .log): $(grep '^T=\|DONE' $f | tail -1)" >> /tmp/st/STATUS.md; done; (cd /tmp/st && git add STATUS.md && git commit -qm done && git push -qf origin train-status) >/dev/null 2>&1 || true
           for f in out/*.log; do echo "== $f"; grep "^T=\|DONE\|gait err" $f | tail -5; done
       - name: Собрать pretrained/skills.json
         run: |
