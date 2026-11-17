@@ -32,7 +32,7 @@ func _process(_d):
     var el := (Time.get_ticks_msec() - t0) / 1000
     if f % 600 == 0:
         print("T=%ds %s eps=%d best=%.2f sup=%d sigma=%.3f ok=%d mastered=%d" % [el, sim.goal, sim.eps, sim.best, sim.support, sim.sigma, sim.ok_rounds, sim.mastered])
-    if el - last_save >= 300:
+    if el - last_save >= 60:
         last_save = el
         _write(false)
     if el > int(OS.get_environment("SECS")) or (sim.mastered >= 3 and el > 600):
