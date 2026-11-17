@@ -19,6 +19,8 @@ var http: HTTPRequest
 var last_report := 0
 
 func _ready() -> void:
+    if OS.get_environment("NO_LLM") != "":
+        return
     var ext := "res://addons/godot_llm/godot_llm.gdextension"
     var has_file := FileAccess.file_exists(ext) or ResourceLoader.exists(ext)
     var loaded := PackedStringArray()

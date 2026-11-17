@@ -54,6 +54,7 @@ var n_w := 0
 
 var auto_on := true       # автотренер и автоподбор подвеса
 var ok_rounds := 0
+var mastered := 0
 var bad_rounds := 0
 var auto_btn: Button
 var gait_on := false
@@ -317,6 +318,7 @@ func _auto_curriculum() -> void:
             _log("[color=cyan]Авто: удаётся 3 раунда подряд → ослабляю подвес[/color]")
             set_support(support - 1)
         else:
+            mastered += 1
             _log("[color=lime]Авто: без подвеса стабильно получается («%s» освоено). Можно ставить следующую цель.[/color]" % GOALS[goal])
     elif bad_rounds >= 6 and support < 3:
         bad_rounds = 0
@@ -330,6 +332,7 @@ func _auto_toggle() -> void:
 
 func _restart_all() -> void:
     ok_rounds = 0
+    mastered = 0
     bad_rounds = 0
     for a in agents:
         a.cur_w = w.duplicate()
@@ -350,6 +353,10 @@ func _set_goal(g: String) -> void:
             w = sw
             eps = int(skills[g].get("eps", 0))
             ok = true
+            if skills[g].has("gait"):
+                if set_gait({"gait": skills[g]["gait"]}) == "":
+                    gait_on = true
+                    gait_btn.text = "Походка ✓"
     if not ok:
         w = PackedFloat32Array()
         w.resize(n_w)
@@ -454,13 +461,40 @@ func _store() -> void:
     for v in w:
         arr.append(snappedf(v, 0.0001))
     skills[goal] = {"w": arr, "eps": eps, "best": best}
+    if gait_on and not gait_json.is_empty():
+        skills[goal]["gait"] = gait_json["gait"]   # умение обучено с этой походкой/позой - без неё не работает
     _save_file()
+
+const PRETRAINED := "res://pretrained/skills.json"
 
 func _load() -> void:
     if FileAccess.file_exists(SAVE):
         var j = JSON.parse_string(FileAccess.get_file_as_string(SAVE))
         if j is Dictionary:
             skills = j
+    elif FileAccess.file_exists(PRETRAINED):
+        _load_pretrained(false)
+
+# предобученные умения, зашитые в приложение (обучены заранее, см. pretrained/REPORT.md)
+func _load_pretrained(only_current: bool) -> void:
+    if not FileAccess.file_exists(PRETRAINED):
+        _log("[color=tomato]Предобученных умений в этой сборке нет.[/color]")
+        return
+    var j = JSON.parse_string(FileAccess.get_file_as_string(PRETRAINED))
+    if not (j is Dictionary):
+        return
+    for g in j:
+        if str(g).begins_with("_") or not GOALS.has(g):
+            continue
+        if only_current and g != goal:
+            continue
+        skills[g] = j[g]
+    if only_current:
+        if not j.has(goal):
+            _log("[color=tomato]Для цели «%s» предобученного умения нет.[/color]" % GOALS[goal])
+            return
+        _set_goal(goal)
+        _log("[color=lime]Загружено предобученное умение «%s»%s[/color]" % [GOALS[goal], " (с походкой/позой)" if skills[goal].has("gait") else ""])
 
 func _save_file() -> void:
     var f := FileAccess.open(SAVE, FileAccess.WRITE)
@@ -664,6 +698,7 @@ func _build_ui() -> void:
     r5.add_child(auto_btn)
     gait_btn = _btn("Походка ✗", _gait_toggle)
     r5.add_child(gait_btn)
+    r5.add_child(_btn("Предобуч.", func(): _load_pretrained(true)))
     var rg: HBoxContainer
     var gi := 0
     for g in groups:

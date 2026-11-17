@@ -1,0 +1,60 @@
+name: train-pretrained
+# Предобучение умений заранее: запускается пушем в train/request.txt или вручную.
+on:
+  workflow_dispatch:
+  push:
+    paths: ["train/request.txt"]
+permissions:
+  contents: write
+  actions: write
+jobs:
+  train:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 345
+    container: barichello/godot-ci:4.2.2
+    steps:
+      - uses: actions/checkout@v4
+      - name: Подготовка проекта
+        run: |
+          nproc
+          cp ci/train.gd train.gd
+          sed -i 's|^\[autoload\]|[autoload]\nTrainer="*res://train.gd"|' project.godot
+          godot --headless --import || true
+      - name: Обучение (4 процесса параллельно)
+        env:
+          NO_LLM: "1"
+          SECS: ${{ vars.TRAIN_SECS || '15000' }}
+        run: |
+          mkdir -p out
+          run() { # имя цель гaит подвес
+            mkdir -p xdg_$1
+            XDG_DATA_HOME=$PWD/xdg_$1 XDG_CONFIG_HOME=$PWD/xdg_$1/cfg GOAL=$2 GAITFILE=$3 SUP=$4 OUT=$PWD/out/$1.json \
+              godot --headless --fixed-fps 240 > out/$1.log 2>&1
+          }
+          run stand_a stand ci/gait_stand.json 3 &
+          run stand_b stand ci/gait_stand.json 3 &
+          run walk_a walk ci/gait_walk.json 3 &
+          run walk_b walk ci/gait_walk.json 3 &
+          wait
+          for f in out/*.log; do echo "== $f"; grep "^T=\|DONE\|gait err" $f | tail -5; done
+      - name: Собрать pretrained/skills.json
+        run: |
+          python3 ci/pack.py
+          cat pretrained/REPORT.md
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pretrained
+          path: |
+            pretrained
+            out/*.log
+      - name: Закоммитить и запустить сборку APK
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config user.name "trainer-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add pretrained
+          git commit -m "Предобученные умения (авто, CI)" || exit 0
+          git pull --rebase origin main
+          git push origin HEAD:main
+          curl -sS -X POST -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/${{ github.repository }}/actions/workflows/build.yml/dispatches -d '{"ref":"main"}'
