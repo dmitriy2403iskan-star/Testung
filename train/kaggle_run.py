@@ -76,10 +76,14 @@ def main():
     os.makedirs(RES, exist_ok=True)
     while any(p.poll() is None for p in procs.values()):
         time.sleep(60)
-        print(status(logs, start), flush=True)
+        st = status(logs, start)
+        print(st, flush=True)
+        open(os.path.join(RES, "status.txt"), "w", encoding="utf-8").write(st + "\n")
         for f in glob.glob(os.path.join(WORK, "out", "*.json")):  # промежуточные результаты
             shutil.copy(f, RES)
-    print(status(logs, start), flush=True)
+    st = status(logs, start)
+    print(st, flush=True)
+    open(os.path.join(RES, "status.txt"), "w", encoding="utf-8").write("ГОТОВО (обучение закончено)\n" + st + "\nСкачать: /result.zip\n")
     sh("python3 %s" % os.path.join(WORK, "ci", "pack.py"), cwd=WORK)
     for f in glob.glob(os.path.join(WORK, "out", "*")):
         shutil.copy(f, RES)
