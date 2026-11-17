@@ -15,6 +15,11 @@ const SPACING := 1.7
 const SIGMA_MUL := [1.0, 0.6, 1.5, 2.2]
 const SUPPORT_NAMES := ["Выкл", "Лёгкий", "Средний", "Сильный"]
 const MENU_H := 720.0
+const COLS := 4
+const ROWD := 3.6
+const N_LIST := [1, 2, 4, 8]
+const TASKS := ["stand", "walk", "jump", "fly"]
+const STABLE_NEED := 12   # сколько раундов подряд ВСЕ должны справляться, чтобы перейти к следующей задаче
 
 var cam: Camera3D
 var cam_mode := 0         # 0 - вокруг людей, 1 - свободный полёт
@@ -40,7 +45,8 @@ var cam_sm := Vector3.ZERO
 var last_ms := 0
 
 var agents: Array = []
-var n_agents := 4
+var n_agents := 8
+var stable_rounds := 0
 var focus := -1           # -1 все, иначе номер человека
 var support := 0
 var labels_on := true
@@ -127,7 +133,9 @@ func _spawn(n: int) -> void:
     for i in n:
         var a: Node3D = AgentS.new()
         add_child(a)
-        a.setup(self, i, Vector3((float(i) - float(n - 1) * 0.5) * SPACING, 0, 0))
+        var cols := mini(n, COLS)
+        var rowi := i / cols
+        a.setup(self, i, Vector3((float(i % cols) - float(cols - 1) * 0.5) * SPACING, 0, float(rowi) * ROWD))
         a.sigma_mul = SIGMA_MUL[i % SIGMA_MUL.size()]
         agents.append(a)
     n_dof = agents[0].n_dof
@@ -303,27 +311,47 @@ func _round_success() -> bool:
         return top_h > agents[0].h0 + 0.5
     return true
 
+# каждый человек справился с задачей в этом раунде (падать можно - тогда раунд не засчитан)
+func _agent_ok(a) -> bool:
+    if a.fell or not a.finite() or a.fin_up < 0.8:
+        return false
+    if goal == "walk":
+        return a.fin_fwd > 1.0
+    if goal == "jump":
+        return a.max_h > a.h0 + 0.1
+    if goal == "fly":
+        return a.max_h > a.h0 + 0.5
+    return true
+
 func _auto_curriculum() -> void:
     if baseline:
         return
     if _round_success():
         ok_rounds += 1
-        bad_rounds = 0
     else:
-        bad_rounds += 1
         ok_rounds = 0
     if ok_rounds >= 3:
         ok_rounds = 0
         if support > 0:
             _log("[color=cyan]Авто: удаётся 3 раунда подряд → ослабляю подвес[/color]")
             set_support(support - 1)
+            return
+        mastered += 1
+    # переход к следующей задаче: только без подвеса и когда ВСЕ справляются STABLE_NEED раундов подряд
+    var all_ok := support == 0
+    for a in agents:
+        if not _agent_ok(a):
+            all_ok = false
+    stable_rounds = stable_rounds + 1 if all_ok else 0
+    if stable_rounds >= STABLE_NEED:
+        var ti := TASKS.find(goal)
+        if ti >= 0 and ti + 1 < TASKS.size():
+            _log("[color=lime]Авто: все %d справились %d раундов подряд → следующая задача: %s[/color]" % [agents.size(), STABLE_NEED, GOALS[TASKS[ti + 1]]])
+            _set_goal(TASKS[ti + 1], true)
+            set_support(0)
         else:
-            mastered += 1
-            _log("[color=lime]Авто: без подвеса стабильно получается («%s» освоено). Можно ставить следующую цель.[/color]" % GOALS[goal])
-    elif bad_rounds >= 6 and support < 3:
-        bad_rounds = 0
-        _log("[color=orange]Авто: 6 раундов неудач → усиливаю подвес[/color]")
-        set_support(support + 1)
+            stable_rounds = 0
+            _log("[color=lime]Авто: все задачи освоены![/color]")
 
 func _auto_toggle() -> void:
     auto_on = not auto_on
@@ -343,7 +371,7 @@ func _restart_all() -> void:
         a.verdict = "старт"
         a.verdict_col = Color(0.8, 0.8, 0.8)
 
-func _set_goal(g: String) -> void:
+func _set_goal(g: String, inherit := false) -> void:
     _store()
     goal = g
     var ok := false
@@ -358,15 +386,19 @@ func _set_goal(g: String) -> void:
                     gait_on = true
                     gait_btn.text = "Походка ✓"
     if not ok:
-        w = PackedFloat32Array()
-        w.resize(n_w)
-        for i in n_w:
-            w[i] = randfn(0.0, 0.03)
+        if inherit and w.size() == n_w:
+            pass   # новая задача начинается с того, что уже умеет
+        else:
+            w = PackedFloat32Array()
+            w.resize(n_w)
+            for i in n_w:
+                w[i] = randfn(0.0, 0.03)
         eps = 0
     baseline = true
     best = -1e9
     sigma = 0.05
     stall = 0
+    stable_rounds = 0
     _restart_all()
     _log("Цель: [b]%s[/b]" % GOALS[g])
 
@@ -681,7 +713,7 @@ func _build_ui() -> void:
     r4.add_child(cam_btn)
     focus_btn = _btn("Фокус: все", _focus_next)
     r4.add_child(focus_btn)
-    count_btn = _btn("Людей: 4", _count_next)
+    count_btn = _btn("Людей: 8", _count_next)
     r4.add_child(count_btn)
     r4.add_child(_btn("Вид ⟲", _cam_reset))
     var r3 := HBoxContainer.new()
@@ -818,7 +850,8 @@ func _focus_next() -> void:
     _update_labels_ui()
 
 func _count_next() -> void:
-    var n := n_agents % 4 + 1
+    var k := N_LIST.find(n_agents)
+    var n: int = N_LIST[(k + 1) % N_LIST.size()]
     _spawn(n)
     _log("Людей: %d" % n)
 
@@ -853,11 +886,13 @@ func _frame_target() -> Vector3:
 func _orbit_dist() -> float:
     if focus >= 0 or agents.size() < 2:
         return cam_dist
-    var span := float(agents.size() - 1) * SPACING + 1.6
+    var cols := mini(agents.size(), COLS)
+    var rows := (agents.size() + COLS - 1) / COLS
+    var span := float(cols - 1) * SPACING + 1.6
     var vs := get_viewport().get_visible_rect().size
     var asp := vs.x / maxf(vs.y, 1.0)
     var hf := tan(deg_to_rad(cam.fov * 0.5)) * minf(asp, 1.6)
-    var need := span * 0.5 / hf + 1.0
+    var need := span * 0.5 / hf + 1.0 + float(rows - 1) * ROWD * 0.5
     return cam_dist * maxf(1.0, need / 4.0)
 
 func _cam_update() -> void:
@@ -999,5 +1034,4 @@ func _process(_d: float) -> void:
         fpos += (bs.x * m.x + Vector3.UP * m.y - bs.z * m.z) * 3.5 * rd
         fpos.y = maxf(fpos.y, 0.15)
     _cam_update()
-    var p0 := agents[0].root_pos() as Vector3
-    hud.text = "%s | эп. %d | лучший %.1f | σ %.2f\nлюдей %d | подвес: %s | фокус: %s\nСеть тела: %d весов ✓\nНейронка-переводчик: %s" % [GOALS[goal], eps, best if best > -1e8 else 0.0, sigma, agents.size(), SUPPORT_NAMES[support], "все" if focus < 0 else "№%d" % (focus + 1), n_w, brain.mode_text()]
+    hud.text = "%s | эп. %d | лучший %.1f | σ %.2f\nлюдей %d | подвес: %s | фокус: %s\nЗадача %d/4: все стоят подряд %d/%d\nСеть тела: %d весов ✓\nНейронка-переводчик: %s" % [GOALS[goal], eps, best if best > -1e8 else 0.0, sigma, agents.size(), SUPPORT_NAMES[support], "все" if focus < 0 else "№%d" % (focus + 1), TASKS.find(goal) + 1, stable_rounds, STABLE_NEED, n_w, brain.mode_text()]
