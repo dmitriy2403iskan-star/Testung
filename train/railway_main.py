@@ -40,6 +40,9 @@ def rec_job(which, secs, snap):
         cmd = ('nice -n 5 xvfb-run -a -s "-screen 0 720x1280x24" "%s" --rendering-driver opengl3 '
                '--write-movie out.avi --fixed-fps 30 --resolution 540x960' % kaggle_run.get_godot())
         r = subprocess.run(cmd, shell=True, cwd=REC, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=3 * 3600)
+        if not shutil.which("ffmpeg"):   # на случай, если при старте контейнера пакет не поставился
+            REC_ST["msg"] = "Ставлю ffmpeg..."
+            subprocess.run("apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg", shell=True, check=True)
         tmp = os.path.join(REC, "video_new.mp4")
         subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", out, "-c:v", "libx264", "-pix_fmt", "yuv420p",
                         "-crf", "26", tmp], check=True)
