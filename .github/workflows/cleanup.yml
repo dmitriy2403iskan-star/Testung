@@ -11,6 +11,11 @@ jobs:
   clean:
     runs-on: ubuntu-22.04
     steps:
+      - name: Остановить устаревшие запуски (список в train/cancel.txt)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for id in $(cat train/cancel.txt 2>/dev/null); do gh run cancel $id --repo ${{ github.repository }} && echo "cancelled $id" || true; done
       - name: Удалить все артефакты репозитория
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
