@@ -156,13 +156,12 @@ jobs:
           retention-days: 3
           path: build/komandir.apk
       - name: APK в Releases (не зависит от квоты артефактов)
-        run: |
-          [ -f build/komandir.apk ] || { echo "нет apk"; exit 1; }
-          API=https://api.github.com/repos/${{ github.repository }}
-          H="Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}"
-          old=$(curl -sS -H "$H" $API/releases/tags/latest-apk | sed -n 's/^  "id": *\([0-9]*\),.*/\1/p' | head -1)
-          [ -n "$old" ] && curl -sS -X DELETE -H "$H" $API/releases/$old
-          curl -sS -X DELETE -H "$H" $API/git/refs/tags/latest-apk
-          rid=$(curl -sS -X POST -H "$H" $API/releases -d "{\"tag_name\":\"latest-apk\",\"target_commitish\":\"$GITHUB_SHA\",\"name\":\"APK (последняя сборка)\",\"prerelease\":true,\"body\":\"Сборка $GITHUB_SHA\"}" | sed -n 's/^  "id": *\([0-9]*\),.*/\1/p' | head -1)
-          echo "release id: $rid"
-          curl -sS -X POST -H "$H" -H "Content-Type: application/vnd.android.package-archive" --data-binary @build/komandir.apk "https://uploads.github.com/repos/${{ github.repository }}/releases/$rid/assets?name=komandir.apk" | head -c 300
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-apk
+          name: APK (последняя сборка)
+          prerelease: true
+          body: "Сборка ${{ github.sha }}"
+          files: build/komandir.apk
+          overwrite_files: true
+          target_commitish: ${{ github.sha }}
