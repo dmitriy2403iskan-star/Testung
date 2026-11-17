@@ -154,7 +154,7 @@ func _refresh_active() -> void:
     for i in n_dof:
         act.append(groups[agents[0].d_g[i]])
     for k in 3:
-        act.append(groups["thrust"])
+        act.append(groups["thrust"] and goal == "fly")   # тяга только для полёта: иначе нейросеть "ходит" полётом
 
 # ---------- мир ----------
 func _build_world() -> void:
@@ -374,6 +374,7 @@ func _restart_all() -> void:
 func _set_goal(g: String, inherit := false) -> void:
     _store()
     goal = g
+    _refresh_active()
     var ok := false
     if skills.has(g):
         var sw := PackedFloat32Array(skills[g].get("w", []))
