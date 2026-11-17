@@ -1,6 +1,6 @@
-ОБУЧЕНИЕ (сервер GitHub). Идёт: 68 мин из ~250. Обновлено: 10:01 UTC
-stand_a: T=4098s stand eps=185 best=3.79 sup=1 sigma=0.300 ok=0 mastered=0
-stand_b: T=4096s stand eps=216 best=5.03 sup=1 sigma=0.046 ok=0 mastered=0
-walk_a: T=4098s walk eps=184 best=227.84 sup=1 sigma=0.054 ok=0 mastered=0
-walk_b: T=4101s walk eps=196 best=5.99 sup=1 sigma=0.013 ok=0 mastered=0
+ОБУЧЕНИЕ (сервер GitHub). Идёт: 72 мин из ~250. Обновлено: 10:05 UTC
+stand_a: T=4339s stand eps=194 best=3.31 sup=1 sigma=0.297 ok=0 mastered=0
+stand_b: T=4343s stand eps=227 best=4.97 sup=1 sigma=0.037 ok=0 mastered=0
+walk_a: T=4344s walk eps=193 best=239.20 sup=1 sigma=0.048 ok=0 mastered=0
+walk_b: T=4344s walk eps=209 best=6.14 sup=1 sigma=0.017 ok=0 mastered=0
 (подвес sup: 3 сильный ... 0 нет; mastered = сколько раз освоено без подвеса)
