@@ -2,6 +2,7 @@ name: build-apk
 on:
   push:
     branches: [main]
+    paths-ignore: ["train/**", "logs/**", "docs/**", "ci/mklogs.py"]
   workflow_dispatch:
 permissions:
   contents: write
