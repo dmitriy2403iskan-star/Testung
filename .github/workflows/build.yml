@@ -48,6 +48,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: android-llm-lib
+          retention-days: 1
           path: |
             llm/build/libgodot_llm.android.release.aarch64.so
             llm/build/libomp.so
@@ -128,4 +129,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: komandir-apk
+          retention-days: 7
           path: build/komandir.apk

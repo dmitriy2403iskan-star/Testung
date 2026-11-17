@@ -42,8 +42,10 @@ jobs:
           python3 ci/pack.py
           cat pretrained/REPORT.md
       - uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: pretrained
+          retention-days: 2
           path: |
             pretrained
             out/*.log
