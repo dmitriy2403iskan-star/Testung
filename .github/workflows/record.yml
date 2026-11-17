@@ -1,0 +1,66 @@
+name: record-video
+# Видео того, что умеют люди сейчас (лучший чекпоинт серверного обучения). Запуск: кнопка Run workflow
+# или пуш в train/record.txt (формат: "stand 20" или "walk_a 30": имя/цель и секунды).
+on:
+  workflow_dispatch:
+    inputs:
+      which:
+        description: "stand, walk (лучший по цели) или имя: stand_a, stand_b, walk_a, walk_b"
+        default: "walk"
+      seconds:
+        description: "Длина видео, секунд (до 60)"
+        default: "20"
+  push:
+    paths: ["train/record.txt"]
+permissions:
+  contents: write
+jobs:
+  rec:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: train-status
+          path: ckpt
+      - name: Параметры
+        id: p
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then read W S < train/record.txt; else W="${{ inputs.which }}"; S="${{ inputs.seconds }}"; fi
+          [ -z "$S" ] && S=20; [ "$S" -gt 60 ] && S=60
+          case "$W" in
+            stand|walk|jump|fly) F=$(python3 ci/pickckpt.py $W) ;;
+            *) F=ckpt/ckpt_$W.json ;;
+          esac
+          echo "file=$F" >> $GITHUB_OUTPUT; echo "frames=$((S*30))" >> $GITHUB_OUTPUT
+          echo "Чекпоинт: $F"; ls ckpt | head -20
+          [ -f "$F" ] || { echo "нет чекпоинта (обучение ещё не сохранило)"; exit 1; }
+          python3 -c "import json;r=json.load(open('$F'));print('goal',r['goal'],'support',r['support'],'eps',r['eps'],'best',r['best'])"
+      - name: Установка
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq xvfb ffmpeg libgl1-mesa-dri libglu1-mesa libxcursor1 libxinerama1 libxrandr2 libxi6 libasound2
+          wget -q https://github.com/godotengine/godot/releases/download/4.2.2-stable/Godot_v4.2.2-stable_linux.x86_64.zip
+          unzip -q Godot_v4.2.2-stable_linux.x86_64.zip
+          chmod +x Godot_v4.2.2-stable_linux.x86_64
+          cp ci/record.gd record.gd
+          sed -i 's|^\[autoload\]|[autoload]\nRecorder="*res://record.gd"|' project.godot
+          ./Godot_v4.2.2-stable_linux.x86_64 --headless --import || true
+      - name: Запись
+        env:
+          NO_LLM: "1"
+        run: |
+          REPLAY_FILE=$PWD/${{ steps.p.outputs.file }} FRAMES=${{ steps.p.outputs.frames }} \
+            xvfb-run -a -s "-screen 0 720x1280x24" ./Godot_v4.2.2-stable_linux.x86_64 \
+            --rendering-driver opengl3 --write-movie out.avi --fixed-fps 30 --resolution 540x960
+          ffmpeg -y -loglevel error -i out.avi -c:v libx264 -pix_fmt yuv420p -crf 26 video.mp4
+          ls -la video.mp4
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest-video
+          name: Видео (последнее)
+          prerelease: true
+          body: "Видео: ${{ steps.p.outputs.file }} (${{ github.sha }})"
+          files: video.mp4
+          overwrite_files: true

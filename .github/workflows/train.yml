@@ -46,7 +46,8 @@ jobs:
                 done
                 echo "(подвес sup: 3 сильный ... 0 нет; mastered = сколько раз освоено без подвеса)"
               } > /tmp/st/STATUS.md
-              (cd /tmp/st && git add STATUS.md && git commit -qm "status" && git push -qf origin train-status) >/dev/null 2>&1 || true
+              for f in out/*.json; do [ -f "$f" ] && cp "$f" /tmp/st/ckpt_$(basename $f); done
+              (cd /tmp/st && git add -A && git commit -qm "status" && git push -qf origin train-status) >/dev/null 2>&1 || true
             done
           ) &
           STATUS_PID=$!
@@ -56,7 +57,7 @@ jobs:
           run walk_b walk ci/gait_walk.json 3 &
           wait $(jobs -p | grep -v "^$STATUS_PID$")
           kill $STATUS_PID 2>/dev/null || true
-          echo "ОБУЧЕНИЕ ЗАВЕРШЕНО $(date -u +%H:%M) UTC" > /tmp/st/STATUS.md; for f in out/*.log; do echo "$(basename $f .log): $(grep '^T=\|DONE' $f | tail -1)" >> /tmp/st/STATUS.md; done; (cd /tmp/st && git add STATUS.md && git commit -qm done && git push -qf origin train-status) >/dev/null 2>&1 || true
+          echo "ОБУЧЕНИЕ ЗАВЕРШЕНО $(date -u +%H:%M) UTC" > /tmp/st/STATUS.md; for f in out/*.log; do echo "$(basename $f .log): $(grep '^T=\|DONE' $f | tail -1)" >> /tmp/st/STATUS.md; done; (cd /tmp/st && for f in $OLDPWD/out/*.json; do cp $f ckpt_$(basename $f); done; git add -A && git commit -qm done && git push -qf origin train-status) >/dev/null 2>&1 || true
           for f in out/*.log; do echo "== $f"; grep "^T=\|DONE\|gait err" $f | tail -5; done
       - name: Собрать pretrained/skills.json
         run: |
