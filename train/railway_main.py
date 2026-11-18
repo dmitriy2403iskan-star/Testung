@@ -5,7 +5,7 @@
   GET /rec         - страница записи видео: выбрать чекпоинт и длину, нажать "Записать"
   GET /record?which=walk_b&secs=30 - снять видео с текущего состояния обучения (потом /video.mp4)
 Переменные: SECS (по умолчанию 10800), PROCS, PORT (даёт хост)."""
-import os, sys, time, shutil, subprocess, threading, http.server, socketserver
+import os, sys, time, signal, shutil, subprocess, threading, http.server, socketserver
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import kaggle_run
@@ -15,6 +15,7 @@ ROOT = os.path.abspath(".")
 REC = os.path.abspath("rec")
 REC_ST = {"state": "нет", "msg": "Видео ещё не запрашивали", "t": 0}
 REC_LOCK = threading.Lock()
+REC_PROC = {"p": None, "cancel": False}
 NAMES = ["stand_a", "walk_a", "stand_b", "walk_b"]
 
 
@@ -49,8 +50,22 @@ def rec_job(which, secs, snap):
                    XDG_DATA_HOME=os.path.join(REC, "xdg"), XDG_CONFIG_HOME=os.path.join(REC, "xdg", "cfg"))
         cmd = ('nice -n 5 xvfb-run -a -s "-screen 0 720x1280x24" "%s" --rendering-driver opengl3 '
                '--write-movie %s --fixed-fps 30 --resolution 540x960' % (kaggle_run.get_godot(), out))
-        r = subprocess.run(cmd, shell=True, cwd=REC, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                           text=True, timeout=3 * 3600)
+        REC_PROC["cancel"] = False
+        pr = subprocess.Popen(cmd, shell=True, cwd=REC, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              text=True, start_new_session=True)
+        REC_PROC["p"] = pr
+        try:
+            o, _ = pr.communicate(timeout=3 * 3600)
+        except subprocess.TimeoutExpired:
+            os.killpg(pr.pid, signal.SIGKILL)
+            o, _ = pr.communicate()
+        REC_PROC["p"] = None
+        if REC_PROC["cancel"]:
+            REC_ST.update(state="отменено", msg="Запись отменена")
+            return
+
+        class r:
+            stdout, returncode = o or "", pr.returncode
         open(os.path.join(REC, "render.log"), "w").write(r.stdout)
         if not os.path.exists(out):
             raise RuntimeError("Godot не создал видео (код %s): %s" % (r.returncode, r.stdout[-500:]))
@@ -79,6 +94,20 @@ def rec_start(which, secs):
     return "Запись пошла: %s, %d с. Смотри статус на /rec" % (which, secs)
 
 
+def rec_cancel():
+    p = REC_PROC["p"]
+    if not REC_LOCK.locked():
+        return "Сейчас ничего не записывается"
+    REC_PROC["cancel"] = True
+    if p is not None:
+        try:
+            os.killpg(p.pid, signal.SIGKILL)
+        except Exception:
+            pass
+    REC_ST.update(state="отменено", msg="Запись отменена")
+    return "Отменяю запись..."
+
+
 def rec_page(note=""):
     opts = "".join('<option>%s</option>' % n for n in NAMES)
     link = ' <a href="/video.mp4">Скачать видео</a>' if os.path.exists(os.path.join(kaggle_run.RES, "video.mp4")) else ""
@@ -86,6 +115,7 @@ def rec_page(note=""):
 <body style="font:18px sans-serif;max-width:520px;margin:20px auto;padding:0 12px"><h3>Запись видео</h3>
 <form action=/record><p>Кто: <select name=which>%s</select></p>
 <p>Секунд: <input name=secs type=number value=30 min=5 max=60></p><button style="font-size:20px">Записать</button></form>
+<p><a href=/cancel style="font-size:18px">Отменить запись</a></p>
 <p>%s</p><p><b>Статус:</b> %s.%s</p><p><a href=/rec>Обновить</a> | <a href=/>Статус обучения</a></p>
 <p style="color:#888;font-size:14px">Берётся последнее сохранение обучения (обновляется раз в минуту). Рендер идёт параллельно с обучением, 30 с видео ≈ 5-15 мин.</p>""" % (opts, note, REC_ST["msg"], link)).encode("utf-8")
 
@@ -93,7 +123,7 @@ def rec_page(note=""):
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         path, _, qs = self.path.partition("?")
-        if path in ("/rec", "/record"):
+        if path in ("/rec", "/record", "/cancel"):
             q = dict(p.split("=", 1) for p in qs.split("&") if "=" in p)
             note = ""
             if path == "/record":
@@ -102,6 +132,8 @@ class H(http.server.BaseHTTPRequestHandler):
                 except ValueError:
                     secs = 30
                 note = rec_start(q.get("which", "walk_b"), secs)
+            if path == "/cancel":
+                note = rec_cancel()
             body = rec_page(note)
             ctype = "text/html; charset=utf-8"
         elif path in ("/", "/status"):
