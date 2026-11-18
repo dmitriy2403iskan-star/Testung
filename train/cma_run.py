@@ -238,12 +238,14 @@ def main():
         for x, d in zip(isl, st["isl"]):
             x.load(d)
         say("Продолжаю с сохранения: задача %d, подвес %d, поколение %d" % (st["task"] + 1, SUPPORTS[st["sup"]], st["gen"]))
+    st["elapsed"] = min(st["elapsed"], st["gen"] * 70.0)   # прошлая версия считала время с ошибкой
+    el0 = st["elapsed"]
     pool = Pool(godot, work, WORKERS)
     say("Запущено процессов: %d, людей-подходов: %d по %d кандидатов, потолок %d мин" % (WORKERS, N_ISL, LAM + 1, SECS // 60))
     t_run = time.time()
     last_save = 0
     try:
-        while st["task"] < len(TASKS) and st["elapsed"] + time.time() - t_run < SECS:
+        while st["task"] < len(TASKS) and el0 + time.time() - t_run < SECS:
             goal, gait = TASKS[st["task"]]
             support = SUPPORTS[st["sup"]]
             t0 = time.time()
@@ -273,7 +275,7 @@ def main():
                 n_ok_isl += x.ok_streak >= 3
             best_i = max(range(N_ISL), key=lambda k: isl[k].ema)
             top_master = max(x.master for x in isl)
-            elapsed = st["elapsed"] + time.time() - t_run
+            elapsed = el0 + time.time() - t_run
             LOG.append("Поколение %d | %s | подвес %d | лучший остров №%d (%.2f) | прошли ступень: %d из %d | стоят подряд (макс.): %d/10 | %.0f с" %
                        (st["gen"], goal, support, best_i + 1, isl[best_i].ema, n_ok_isl, N_ISL, top_master, time.time() - t0))
             save_ckpt(work, goal, gait, support, isl, best_i, st["gen"], top_master)
