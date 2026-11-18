@@ -97,6 +97,9 @@ var sum_ttilt := 0.0
 var sum_bend := 0.0
 var sum_tw := 0.0
 var tup_last := 1.0
+# --- прыжок: сколько времени обе ступни в воздухе и на какую высоту поднимались (меньшая из двух)
+var air_steps := 0
+var peak_clear := 0.0
 
 func setup(s, i: int, pos: Vector3) -> void:
     sim = s
@@ -522,6 +525,8 @@ func tick() -> bool:
         sum_bend = 0.0
         sum_tw = 0.0
         tup_last = 1.0
+        air_steps = 0
+        peak_clear = 0.0
         held_fin = false
         box_y_fin = 0.0
         start = (b_init[root_i] as Transform3D).origin
@@ -596,9 +601,9 @@ func tick() -> bool:
         var kt: float = SUP_KT[lvl]
         rb.apply_torque(R.y.cross(Vector3.UP) * kt - rb.angular_velocity * (kt * 0.12))
         var fmax: float = SUP_F[lvl] * total_mass * 9.8
-        if goal == "jump":
-            fmax = 0.0   # подвес не должен держать от взлёта: только выравнивает корпус
         var fy := clampf(fmax / 0.12 * (h0 - h) - rb.linear_velocity.y * fmax * 0.12, 0.0, fmax)
+        if goal == "jump" and not (h < 0.75 * h0 and rb.linear_velocity.y < 0.2):
+            fy = 0.0   # прыжок: подвес только подхватывает при провале ниже 75% роста и никогда не тянет вниз и не держит при взлёте
         rb.apply_central_force(Vector3(0, fy, 0))
         if lvl >= 2:
             var yaw := atan2(R.z.x, R.z.z)
@@ -611,6 +616,13 @@ func tick() -> bool:
         sum_ttilt += 1.0 - Rt2.y.y
         sum_bend += (Rt2.y - R.y).length()
         sum_tw += (bodies[torso_i] as RigidBody3D).angular_velocity.length()
+    var clr := 9.0
+    for ff in feet_i:
+        clr = minf(clr, (bodies[ff] as RigidBody3D).global_position.y)
+    if step > 20:
+        peak_clear = maxf(peak_clear, clr)
+        if clr > 0.10:
+            air_steps += 1
     sum_up += maxf(R.y.y, 0.0)
     sum_h += h
     max_h = maxf(max_h, h)
@@ -726,12 +738,13 @@ func _base_score(goal: String) -> float:
     var fwd := p.z - start.z
     var drift := Vector2(p.x - start.x, p.z - start.z).length()
     if goal == "walk":
-        return 3.0 * fwd + 1.5 * upr + clampf(hm / h0, 0.0, 1.1) - 0.3 * ef - 0.5 * th
+        return 3.0 * fwd + 1.5 * upr + clampf(hm / h0, 0.0, 1.1) - 0.3 * ef - 0.5 * th - 1.0 * absf(p.x - start.x)
     if goal == "box":
         var lift := clampf(box_y_fin - BOX_SIZE * 0.5, 0.0, 0.5) if held_fin else 0.0
         return 1.5 * upr + clampf(hm / h0, 0.0, 1.1) + 3.0 * near_sum / n + 3.0 * float(held_n) / n + 8.0 * lift - 0.3 * ef
-    if goal == "jump":
-        return 4.0 * maxf(0.0, max_h - (h0 + 0.3)) + upr + clampf(hm / h0, 0.0, 1.1) - 0.3 * ef - th
+    if goal == "jump":   # награда за высоту ОБЕИХ ступней над землёй и время в воздухе (раньше платили только за подъём таза на 30 см, и между 0 и 30 см градиента не было)
+        var air := clampf(float(air_steps) * dt, 0.0, 1.5)
+        return 10.0 * clampf(peak_clear - 0.05, 0.0, 0.4) + 5.0 * air + upr + 0.5 * clampf(hm / h0, 0.0, 1.1) - 0.2 * ef - drift
     if goal == "fly":
         return clampf(hm, 0.0, 8.0) + 0.5 * upr - 0.2 * ef
     return 2.0 * upr + 3.0 * clampf(hm / h0, 0.0, 1.1) - 0.3 * ef - th - 0.5 * drift

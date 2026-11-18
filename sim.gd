@@ -320,7 +320,7 @@ func _agent_ok(a) -> bool:
     if goal == "walk":
         return a.fin_fwd > 1.0
     if goal == "jump":
-        return a.max_h > a.h0 + 0.1
+        return a.peak_clear > 0.15 and a.air_steps >= 10
     if goal == "fly":
         return a.max_h > a.h0 + 0.5
     if goal == "box":

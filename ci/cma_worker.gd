@@ -94,7 +94,7 @@ func _physics_process(_d):
         elif sim.goal == "walk":   # прошёл 2 м ровно (боковой увод < 1 м), на ногах и выпрямлен, пережил толчок
             good = upright_ok and h > 0.8 * a.h0 and a.fin_fwd > 2.0 and lat < 1.0 and a.tup_last > 0.9
         elif sim.goal == "jump":   # оторвался от земли минимум на 15 см и приземлился прямо, не упал, не уехал
-            good = upright_ok and a.max_h > a.h0 + 0.15 and drift < 1.0
+            good = upright_ok and a.peak_clear > 0.15 and a.air_steps >= 10 and drift < 1.0
         elif sim.goal == "box":   # стоит прямо, коробка поднята выше 35 см и удерживается к концу
             good = upright_ok and a.held_fin and a.box_y_fin > 0.35
         else:
