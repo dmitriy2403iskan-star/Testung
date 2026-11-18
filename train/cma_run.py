@@ -23,8 +23,8 @@ N_W = N_IN * N_HID + N_HID + N_HID * N_OUT + N_OUT   # 2781
 # need - сколько из 8 людей должны стоять/справляться без подвеса 10 поколений подряд; cap_h - потолок времени на задачу
 TASKS = [
     {"name": "stand", "gait": "ci/gait_stand.json", "ep": 12.0, "push": 35.0, "inherit": None, "need": 4, "cap_h": 2.0},
-    {"name": "walk", "gait": "ci/gait_walk.json", "ep": 6.0, "push": 0.0, "inherit": "stand", "need": 1, "cap_h": 3.0},
-    {"name": "jump", "gait": "ci/gait_stand.json", "ep": 6.0, "push": 0.0, "inherit": "stand", "need": 1, "cap_h": 3.0},
+    {"name": "walk", "gait": "ci/gait_walk.json", "ep": 10.0, "push": 20.0, "inherit": "stand", "need": 1, "cap_h": 3.0},
+    {"name": "jump", "gait": "ci/gait_stand.json", "ep": 8.0, "push": 0.0, "inherit": "stand", "need": 1, "cap_h": 3.0},
     {"name": "box", "gait": "ci/gait_stand.json", "ep": 10.0, "push": 0.0, "inherit": "stand", "need": 1, "cap_h": 4.0},
 ]
 SUPPORTS = [3, 2, 1, 0]

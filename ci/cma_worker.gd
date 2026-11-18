@@ -85,12 +85,18 @@ func _physics_process(_d):
         var p: Vector3 = a.root_pos()
         var drift := Vector2(p.x - a.start.x, p.z - a.start.z).length()
         var good: bool
-        if sim.goal == "stand":   # строгая проверка стойки: выпрямлен, высок, не уехал, пережил толчок
-            good = (not a.fell) and a.finite() and a.fin_up > 0.92 and p.y > 0.88 * a.h0 and h > 0.85 * a.h0 and drift < 0.6
-        elif sim.goal == "jump":
-            good = sim._agent_ok(a)
+        var lat: float = absf(p.x - a.start.x)
+        var upright_ok: bool = (not a.fell) and a.finite() and a.fin_up > 0.92 and p.y > 0.88 * a.h0
+        if sim.goal == "stand":   # выпрямлен, высок, не уехал, пережил толчок
+            good = upright_ok and h > 0.85 * a.h0 and drift < 0.6
+        elif sim.goal == "walk":   # прошёл 2 м ровно (боковой увод < 1 м), на ногах и выпрямлен, пережил толчок
+            good = upright_ok and h > 0.8 * a.h0 and a.fin_fwd > 2.0 and lat < 1.0
+        elif sim.goal == "jump":   # оторвался от земли минимум на 15 см и приземлился прямо, не упал, не уехал
+            good = upright_ok and a.max_h > a.h0 + 0.15 and drift < 1.0
+        elif sim.goal == "box":   # стоит прямо, коробка поднята выше 35 см и удерживается к концу
+            good = upright_ok and a.held_fin and a.box_y_fin > 0.35
         else:
-            good = sim._agent_ok(a) and h > 0.8 * a.h0
+            good = sim._agent_ok(a)
         ok.append(1 if good else 0)
         fwd.append(a.fin_fwd)
         hm.append(h)
