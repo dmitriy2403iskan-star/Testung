@@ -51,6 +51,7 @@ func _start_job() -> void:
         a.done = false
         a.fell = false
         a.step = -1
+        a.mix_override = float(job.get("mix", -1.0))
     running = true
 
 func _physics_process(_d):

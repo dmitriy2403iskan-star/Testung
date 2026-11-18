@@ -3,6 +3,7 @@ extends Node
 # ENV: REPLAY_FILE, FRAMES (кадров при 30 fps), SUP (необязательно, переопределяет подвес)
 var f := 0
 var sim
+var own := false   # режим «острова»: сам гоняю эпизоды, чтобы веса не перезаписывались
 func _process(_d):
     f += 1
     if f == 3:
@@ -23,8 +24,32 @@ func _process(_d):
         sim.menu_box.visible = false   # в видео только мир и HUD
         sim.cam_dist = 3.4
         sim.cam_pitch = 16.0
+        if r.has("islands"):
+            own = true
+            sim.set_physics_process(false)   # 8 разных подходов: каждому человеку свои веса и своя доля нейросети
+            for i in sim.agents.size():
+                var isl: Dictionary = r["islands"][mini(i, r["islands"].size() - 1)]
+                sim.agents[i].cur_w = PackedFloat32Array(isl["w"])
+                sim.agents[i].mix_override = float(isl.get("mix", -1.0))
         print("replay goal=", goal, " support=", sup, " gait=", sim.gait_on)
     if f > 3 and f % 30 == 0:
         sim.sigma = 0.0
     if f >= int(OS.get_environment("FRAMES")):
         get_tree().quit()
+
+func _physics_process(_d):
+    if not own or sim == null:
+        return
+    var all_done := true
+    for a in sim.agents:
+        if a.done:
+            continue
+        if a.tick():
+            a.finish()
+        else:
+            all_done = false
+    if all_done:
+        for a in sim.agents:
+            a.done = false
+            a.fell = false
+            a.step = -1

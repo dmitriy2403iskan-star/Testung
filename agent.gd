@@ -12,6 +12,7 @@ const SUP_F := [0.0, 0.3, 0.8, 1.5]
 const N_HID := 16
 
 var sim
+var mix_override := -1.0   # >=0: своя доля нейросети поверх походки (для островов CMA)
 var idx := 0
 var home := Vector3.ZERO
 var sk: Skeleton3D
@@ -445,7 +446,7 @@ func tick() -> bool:
     var out := _policy(_sense(), cur_w)
     var e := 0.0
     var g_on: bool = sim.gait_on
-    var gmix: float = sim.gait_mix
+    var gmix: float = sim.gait_mix if mix_override < 0.0 else mix_override
     var gt := float(step) * dt
     var imit_err := 0.0
     for i in n_dof:
