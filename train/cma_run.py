@@ -165,6 +165,20 @@ def save_ckpt(work, goal, gait, support, m, score, gen, mastered):
     os.replace(tmp, os.path.join(work, "out", goal + ".json"))
 
 
+def old_status(st, goal, support, cma, sc, ok_top, elapsed):
+    """Формат как раньше: 'Идёт N мин из M' и по строке на задачу."""
+    lines = ["Идёт %d мин из %d" % (elapsed / 60, SECS / 60)]
+    for i, (g, _) in enumerate(TASKS):
+        if i == st["task"]:
+            lines.append("%s: T=%ds %s eps=%d best=%.2f sup=%d sigma=%.3f ok=%d mastered=%d" % (
+                g, elapsed, g, st["gen"], st["best"], support, cma.sigma, int(ok_top * 100), st["master"]))
+        elif i < st["task"]:
+            lines.append("%s: освоено" % g)
+        else:
+            lines.append("%s: ещё не начато" % g)
+    return "\n".join(lines)
+
+
 def main():
     godot = K.get_godot()
     K.WORK = work = os.path.abspath(os.environ.get("WORKDIR", "work"))
@@ -216,7 +230,7 @@ def main():
             line = ("Поколение %d | %s | подвес %d | лучший %.2f, средний %.2f, модель-среднее %.2f | справились: %d%% лучших | "
                     "модель стоит подряд: %d/10 | шаг поиска %.3f | %.0f с на поколение" %
                     (st["gen"], goal, support, sc.max(), sc.mean(), sc[0], ok_top * 100, st["master"], cma.sigma, time.time() - t0))
-            say(line)
+            LOG.append(line)
             save_ckpt(work, goal, gait, support, cma.m, sc[0], st["gen"], st["master"])
             if st["master"] >= 10:
                 say(">>> Задача «%s» освоена без подвеса. Идём дальше." % goal)
@@ -231,15 +245,13 @@ def main():
                 say(">>> Подвес снижен до %d" % SUPPORTS[st["sup"]])
             st["elapsed"] = elapsed
             st["cma"] = cma.dump()
-            if time.time() - last_save > 120:
+            if time.time() - last_save > 60:
                 last_save = time.time()
                 json.dump(st, open(stf + ".tmp", "w"))
                 os.replace(stf + ".tmp", stf)
-                text = ("Задача %d из %d: %s | подвес %d (0 = без подвеса)\nПоколение %d, идёт %.1f ч из %.0f ч\n%s\n\n"
-                        "Последние строки:\n%s\n\nЗаписать видео: /rec\n" %
-                        (st["task"] + 1, len(TASKS), goal, support, st["gen"], elapsed / 3600, SECS / 3600,
-                         "Лучший результат поколения: %.2f" % st["best"], "\n".join(LOG[-6:])))
-                open(os.path.join(K.RES, "status.txt"), "w", encoding="utf-8").write(text)
+                text = old_status(st, goal, support, cma, sc, ok_top, elapsed)
+                print(text, flush=True)
+                open(os.path.join(K.RES, "status.txt"), "w", encoding="utf-8").write(text + "\nЗаписать видео: /rec\n")
                 shutil.copy(os.path.join(work, "out", goal + ".json"), K.RES)
         json.dump(st, open(stf, "w"))
     finally:
