@@ -42,6 +42,7 @@ func _start_job() -> void:
         cur_goal = goal
         cur_gait = gf
     sim.set_support(int(job["support"]))
+    sim.ep_steps = int(float(job.get("ep", 6.0)) * float(Engine.physics_ticks_per_second))
     var cands: Array = job["cands"]
     for i in sim.agents.size():
         var a = sim.agents[i]
@@ -52,6 +53,11 @@ func _start_job() -> void:
         a.fell = false
         a.step = -1
         a.mix_override = float(job.get("mix", -1.0))
+        if job.has("push"):   # одинаковый толчок для всех кандидатов поколения
+            a.push_step = int(float(job["push_t"]) * float(Engine.physics_ticks_per_second))
+            a.push_imp = Vector3(float(job["push"][0]), 0.0, float(job["push"][1]))
+        else:
+            a.push_step = -1
     running = true
 
 func _physics_process(_d):
@@ -76,7 +82,15 @@ func _physics_process(_d):
         var a = sim.agents[i]
         sc.append(a.res)
         var h: float = a.sum_h / float(sim.ep_steps)
-        var good: bool = sim._agent_ok(a) and h > 0.8 * a.h0
+        var p: Vector3 = a.root_pos()
+        var drift := Vector2(p.x - a.start.x, p.z - a.start.z).length()
+        var good: bool
+        if sim.goal == "stand":   # строгая проверка стойки: выпрямлен, высок, не уехал, пережил толчок
+            good = (not a.fell) and a.finite() and a.fin_up > 0.92 and p.y > 0.88 * a.h0 and h > 0.85 * a.h0 and drift < 0.6
+        elif sim.goal == "jump":
+            good = sim._agent_ok(a)
+        else:
+            good = sim._agent_ok(a) and h > 0.8 * a.h0
         ok.append(1 if good else 0)
         fwd.append(a.fin_fwd)
         hm.append(h)

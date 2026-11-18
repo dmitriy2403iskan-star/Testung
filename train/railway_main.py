@@ -5,7 +5,7 @@
   GET /rec         - страница записи видео: выбрать чекпоинт и длину, нажать "Записать"
   GET /record?which=walk_b&secs=30 - снять видео с текущего состояния обучения (потом /video.mp4)
 Переменные: SECS (по умолчанию 10800), PROCS, PORT (даёт хост)."""
-import os, re, sys, time, signal, shutil, subprocess, threading, http.server, socketserver
+import os, re, glob, sys, time, signal, shutil, subprocess, threading, http.server, socketserver
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -21,9 +21,8 @@ REC = os.path.abspath("rec")
 REC_ST = {"state": "нет", "msg": "Видео ещё не запрашивали", "t": 0}
 REC_LOCK = threading.Lock()
 REC_PROC = {"p": None, "cancel": False}
-VID_LAST = {}   # имя видео -> когда его в последний раз скачали; через 30 с после этого файл удаляется
-VID_TTL = 30
-NAMES = ["stand", "walk"]
+VID_TTL = 1200   # история записей: видео живёт 20 минут, потом удаляется
+NAMES = ["stand", "walk", "jump", "box"]
 
 
 def rec_prepare():
@@ -77,7 +76,7 @@ def rec_one(which, secs, snap):
     tmp = os.path.join(REC, "video_new.mp4")
     subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", out, "-c:v", "libx264", "-pix_fmt", "yuv420p",
                     "-crf", "26", tmp], check=True)
-    os.replace(tmp, os.path.join(kaggle_run.RES, "video_%s.mp4" % which))
+    os.replace(tmp, os.path.join(kaggle_run.RES, "video_%s_%d.mp4" % (which, int(time.time()))))
     return True
 
 
@@ -99,7 +98,7 @@ def rec_job(items, secs):
 
 
 def rec_start(which, secs):
-    names = NAMES if which == "all" else [which]
+    names = [n for n in NAMES if os.path.exists(os.path.join(kaggle_run.WORK, "out", n + ".json"))] if which == "all" else [which]
     for w in names:
         if w not in NAMES or not os.path.exists(os.path.join(kaggle_run.WORK, "out", w + ".json")):
             return "Нет чекпоинта %s (обучение его ещё не сохранило, подожди минуту)" % w
@@ -131,16 +130,22 @@ def rec_cancel():
 
 
 def rec_page(note=""):
-    opts = "".join('<option value="%s">%s</option>' % (n, t) for n, t in [("all", "Оба (стойка и ходьба)"), ("stand", "stand: стойка"), ("walk", "walk: ходьба")])
-    link = "".join(' <a href="/video_%s.mp4">Скачать %s (снято в %s)</a>' % (n, n, cma_run.hhmm(os.path.getmtime(os.path.join(kaggle_run.RES, "video_%s.mp4" % n))))
-                   for n in NAMES if os.path.exists(os.path.join(kaggle_run.RES, "video_%s.mp4" % n)))
+    opts = "".join('<option value="%s">%s</option>' % (n, t) for n, t in [("all", "Все, что уже обучается"), ("stand", "stand: стойка"), ("walk", "walk: ходьба"), ("jump", "jump: прыжки"), ("box", "box: коробка")])
+    rows = []
+    for f in sorted(glob.glob(os.path.join(kaggle_run.RES, "video_*_*.mp4")), key=os.path.getmtime, reverse=True):
+        m = os.path.getmtime(f)
+        left = max(0, int((VID_TTL - (time.time() - m)) / 60))
+        n = os.path.basename(f)
+        rows.append('<li>%s, <b>%s</b> (%.1f МБ): <a href="/%s">скачать</a>, удалится через %d мин</li>' % (
+            cma_run.hhmm(m), n.split("_")[1], os.path.getsize(f) / 1e6, n, left))
+    link = "<ul>%s</ul>" % "".join(rows) if rows else " Записей пока нет."
     return ("""<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <body style="font:18px sans-serif;max-width:520px;margin:20px auto;padding:0 12px"><h3>Запись видео</h3>
 <form action=/record><p>Кто: <select name=which>%s</select></p>
 <p>Секунд: <input name=secs type=number value=30 min=5 max=60></p><button style="font-size:20px">Записать</button></form>
 <p><a href=/cancel style="font-size:18px">Отменить запись</a></p>
-<p>%s</p><p><b>Статус:</b> %s.%s</p><p><a href=/rec>Обновить</a> | <a href=/>Статус обучения</a></p>
-<p style="color:#888;font-size:14px">Берётся последнее сохранение обучения (обновляется раз в минуту). Скачанное видео удаляется через 30 секунд, при новой записи нужно записывать заново. Рендер идёт параллельно с обучением, 30 с видео ≈ 5-15 мин.</p>""" % (opts, note, REC_ST["msg"], link)).encode("utf-8")
+<p>%s</p><p><b>Статус:</b> %s.</p><p><b>История записей (по Киеву):</b>%s</p><p><a href=/rec>Обновить</a> | <a href=/>Статус обучения</a></p>
+<p style="color:#888;font-size:14px">Берётся последнее сохранение обучения (обновляется раз в минуту). История записей хранится 20 минут, потом старые удаляются. Рендер идёт параллельно с обучением, 30 с видео ≈ 5-15 мин.</p>""" % (opts, note, REC_ST["msg"], link)).encode("utf-8")
 
 
 class H(http.server.BaseHTTPRequestHandler):
@@ -179,8 +184,6 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
-        if path.startswith("/video_") and path.endswith(".mp4"):
-            VID_LAST[path.lstrip("/")] = time.time()
 
     def log_message(self, *a):
         pass
@@ -188,14 +191,13 @@ class H(http.server.BaseHTTPRequestHandler):
 
 def video_cleaner():
     while True:
-        time.sleep(5)
-        for name, t in list(VID_LAST.items()):
-            if time.time() - t > VID_TTL:
-                try:
-                    os.remove(os.path.join(kaggle_run.RES, name))
-                except OSError:
-                    pass
-                VID_LAST.pop(name, None)
+        time.sleep(30)
+        for f in glob.glob(os.path.join(kaggle_run.RES, "video_*.mp4")):
+            try:
+                if time.time() - os.path.getmtime(f) > VID_TTL:
+                    os.remove(f)
+            except OSError:
+                pass
 
 
 def serve():

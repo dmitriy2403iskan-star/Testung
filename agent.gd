@@ -77,6 +77,19 @@ var res := 0.0         # авто-оценка эпизода
 var events: Array = [] # ручные похвалы, ждут подтверждения [шаг, значение]
 const PRAISE_WIN := 0.8 # сек: похвала засчитывается, только если он ещё в порядке через это время
 var label: Label3D
+# --- коробка (задача "box"): у каждого человека своя; "хват" - мягкая притяжка к кисти, пока сеть "сжимает" (выход n_dof > 0)
+const BOX_SIZE := 0.3
+var box: RigidBody3D
+var box_on := false
+var box_init := Transform3D.IDENTITY
+var hand_i: Array = []
+var held_n := 0
+var near_sum := 0.0
+var held_fin := false
+var box_y_fin := 0.0
+# --- проверка на устойчивость: разовый толчок корпуса на шаге push_step
+var push_step := -1
+var push_imp := Vector3.ZERO
 
 func setup(s, i: int, pos: Vector3) -> void:
     sim = s
@@ -84,6 +97,10 @@ func setup(s, i: int, pos: Vector3) -> void:
     home = pos
     dt = 1.0 / float(Engine.physics_ticks_per_second)
     _build_body()
+    for k in bodies.size():
+        var bn := sk.get_bone_name(b_bone[k])
+        if bn.begins_with("hand"):
+            hand_i.append(k)
     n_in = 17 + n_dof
     n_out = n_dof + 3
     label = Label3D.new()
@@ -348,7 +365,45 @@ func L_of(k: int) -> float:
     var i: int = b_bone[k]
     return maxf((_tail_of(i) - _world_rest(i).origin).length(), 0.03)
 
+func set_box(on: bool) -> void:
+    if on and box == null:
+        box = RigidBody3D.new()
+        box.mass = 2.5
+        box.can_sleep = false
+        var cs := CollisionShape3D.new()
+        var bs := BoxShape3D.new()
+        bs.size = Vector3(BOX_SIZE, BOX_SIZE, BOX_SIZE)
+        cs.shape = bs
+        box.add_child(cs)
+        var mi := MeshInstance3D.new()
+        var bm := BoxMesh.new()
+        bm.size = Vector3(BOX_SIZE, BOX_SIZE, BOX_SIZE)
+        var mat := StandardMaterial3D.new()
+        mat.albedo_color = Color(0.95, 0.55, 0.1)
+        bm.material = mat
+        mi.mesh = bm
+        box.add_child(mi)
+        add_child(box)
+        box_init = Transform3D(Basis(), home + Vector3(0, BOX_SIZE * 0.5, 0.9))
+        box.global_transform = box_init
+    box_on = on
+    if box != null:
+        box.visible = on
+        box.collision_layer = 1 if on else 0
+        box.collision_mask = 3 if on else 0
+        box.freeze = not on
+        _reset_box()
+
+func _reset_box() -> void:
+    if box == null:
+        return
+    var rid: RID = box.get_rid()
+    PhysicsServer3D.body_set_state(rid, PhysicsServer3D.BODY_STATE_TRANSFORM, box_init)
+    PhysicsServer3D.body_set_state(rid, PhysicsServer3D.BODY_STATE_LINEAR_VELOCITY, Vector3.ZERO)
+    PhysicsServer3D.body_set_state(rid, PhysicsServer3D.BODY_STATE_ANGULAR_VELOCITY, Vector3.ZERO)
+
 func _reset_body() -> void:
+    _reset_box()
     for i in bodies.size():
         var rid: RID = bodies[i].get_rid()
         PhysicsServer3D.body_set_state(rid, PhysicsServer3D.BODY_STATE_TRANSFORM, b_init[i])
@@ -416,8 +471,13 @@ func _sense() -> PackedFloat32Array:
     for f in feet_i:
         x.append(1.0 if bodies[f].global_position.y < 0.08 else 0.0)
     var t := float(step) * dt
-    x.append(sin(t * 6.0))
-    x.append(cos(t * 6.0))
+    if box_on and box != null:   # в задаче "box" два канала часов заняты положением коробки (в осях тела)
+        var rel: Vector3 = R.inverse() * (box.global_position - rb.global_position)
+        x.append(clampf(rel.x * 0.6, -1.5, 1.5))
+        x.append(clampf(rel.z * 0.6, -1.5, 1.5))
+    else:
+        x.append(sin(t * 6.0))
+        x.append(cos(t * 6.0))
     for i in n_dof:
         var k: int = d_j[i]
         var F: Basis = j_frame[k]
@@ -438,6 +498,10 @@ func tick() -> bool:
         thr = 0.0
         sum_im = 0.0
         eff = 0.0
+        held_n = 0
+        near_sum = 0.0
+        held_fin = false
+        box_y_fin = 0.0
         start = (b_init[root_i] as Transform3D).origin
         return false
     var act: Array = sim.act
@@ -481,6 +545,27 @@ func tick() -> bool:
     var rb: RigidBody3D = bodies[root_i]
     var f := Vector3(out[n_dof], out[n_dof + 1], out[n_dof + 2]) if act[n_dof] else Vector3.ZERO
     rb.apply_central_force(rb.global_transform.basis * (f * THRUST))
+    if box_on and box != null:
+        var bp: Vector3 = box.global_position
+        var gripping: bool = out[n_dof] > 0.0
+        var dmin := 9.0
+        var any := false
+        for hk in hand_i:
+            var hb: RigidBody3D = bodies[hk]
+            var dd: float = hb.global_position.distance_to(bp)
+            dmin = minf(dmin, dd)
+            if gripping and dd < 0.28:
+                var fv: Vector3 = ((hb.global_position - bp) * 400.0 - (box.linear_velocity - hb.linear_velocity) * 25.0).limit_length(600.0)
+                box.apply_central_force(fv)
+                hb.apply_central_force(-fv * 0.3)
+                any = true
+        near_sum += exp(-dmin / 0.35)
+        if any:
+            held_n += 1
+        held_fin = any
+        box_y_fin = box.global_position.y
+    if push_step >= 0 and step == push_step:
+        rb.apply_central_impulse(push_imp)
     var R: Basis = rb.global_transform.basis * root_rest_inv
     var h := rb.global_position.y
     var lvl: int = sim.support
@@ -596,6 +681,9 @@ func _base_score(goal: String) -> float:
     var drift := Vector2(p.x - start.x, p.z - start.z).length()
     if goal == "walk":
         return 3.0 * fwd + 1.5 * upr + clampf(hm / h0, 0.0, 1.1) - 0.3 * ef - 0.5 * th
+    if goal == "box":
+        var lift := clampf(box_y_fin - BOX_SIZE * 0.5, 0.0, 0.5) if held_fin else 0.0
+        return 1.5 * upr + clampf(hm / h0, 0.0, 1.1) + 3.0 * near_sum / n + 3.0 * float(held_n) / n + 8.0 * lift - 0.3 * ef
     if goal == "jump":
         return 4.0 * maxf(0.0, max_h - (h0 + 0.3)) + upr + clampf(hm / h0, 0.0, 1.1) - 0.3 * ef - th
     if goal == "fly":

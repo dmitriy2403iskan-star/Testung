@@ -24,6 +24,8 @@ func _process(_d):
         sim.menu_box.visible = false   # в видео только мир и HUD
         sim.cam_dist = 3.4
         sim.cam_pitch = 16.0
+        if r.has("ep"):
+            sim.ep_steps = int(float(r["ep"]) * float(Engine.physics_ticks_per_second))
         if r.has("islands"):
             own = true
             sim.set_physics_process(false)   # 8 разных подходов: каждому человеку свои веса и своя доля нейросети
