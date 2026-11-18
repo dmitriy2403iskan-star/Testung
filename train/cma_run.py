@@ -14,18 +14,19 @@ DATA = os.path.abspath(os.environ.get("DATA_DIR", "state"))
 SECS = int(os.environ.get("SECS", "43200"))
 WORKERS = int(os.environ.get("WORKERS", os.cpu_count() or 2))
 LAM = int(os.environ.get("LAM", "15"))   # кандидатов на остров (+1 слот под текущую модель = 16 = 2 чанка)
-N_ISL = 8
-MIXES = [0.3, 0.2, 0.4, 0.25, 0.35, 0.15, 0.5, 0.3]
-SIGMAS = [0.1, 0.05, 0.2, 0.08, 0.15, 0.1, 0.12, 0.3]
+N_MAIN = 8   # основные люди (их видно на видео)
+N_ISL = 10   # + 2 помощника: берут лучшее знание, дорабатывают отдельно и возвращают, если вышло лучше
+MIXES = [0.3, 0.2, 0.4, 0.25, 0.35, 0.15, 0.5, 0.3, 0.3, 0.3]
+SIGMAS = [0.1, 0.05, 0.2, 0.08, 0.15, 0.1, 0.12, 0.3, 0.03, 0.05]
 MIGRATE_EVERY = 10
 N_IN, N_HID, N_OUT = 91, 16, 77
 N_W = N_IN * N_HID + N_HID + N_HID * N_OUT + N_OUT   # 2781
 # need - сколько из 8 людей должны стоять/справляться без подвеса 10 поколений подряд; cap_h - потолок времени на задачу
 TASKS = [
-    {"name": "stand", "gait": "ci/gait_stand.json", "ep": 12.0, "push": 35.0, "inherit": None, "need": 4, "cap_h": 2.0},
-    {"name": "walk", "gait": "ci/gait_walk.json", "ep": 10.0, "push": 20.0, "inherit": "stand", "need": 1, "cap_h": 3.0},
-    {"name": "jump", "gait": "ci/gait_stand.json", "ep": 8.0, "push": 0.0, "inherit": "stand", "need": 1, "cap_h": 3.0},
-    {"name": "box", "gait": "ci/gait_stand.json", "ep": 10.0, "push": 0.0, "inherit": "stand", "need": 1, "cap_h": 4.0},
+    {"name": "stand", "gait": "ci/gait_stand.json", "ep": 12.0, "push": 35.0, "inherit": None, "need": 4, "cap_h": None},
+    {"name": "walk", "gait": "ci/gait_walk.json", "ep": 10.0, "push": 20.0, "inherit": "stand", "need": 1, "cap_h": None},
+    {"name": "jump", "gait": "ci/gait_stand.json", "ep": 8.0, "push": 0.0, "inherit": "stand", "need": 1, "cap_h": None},
+    {"name": "box", "gait": "ci/gait_stand.json", "ep": 10.0, "push": 0.0, "inherit": "stand", "need": 1, "cap_h": None},
 ]
 SUPPORTS = [3, 2, 1, 0]
 LOG = []
@@ -166,7 +167,7 @@ def save_ckpt(work, goal, gait, support, isl, best_i, gen, mastered, ep=6.0):
     g = json.load(open(os.path.join(work, gait)))["gait"]
     bi = isl[best_i]
     skill = {"w": [round(float(v), 4) for v in bi.cma.m], "eps": gen, "best": float(bi.ema), "gait": g}
-    islands = [{"w": [round(float(v), 4) for v in x.cma.m], "mix": x.mix} for x in isl]
+    islands = [{"w": [round(float(v), 4) for v in x.cma.m], "mix": x.mix} for x in isl[:N_MAIN]]
     os.makedirs(os.path.join(work, "out"), exist_ok=True)
     r = {"goal": goal, "support": support, "mastered": mastered, "eps": gen, "best": float(bi.ema),
          "skill": skill, "islands": islands, "ep": ep}
@@ -197,7 +198,7 @@ def scold(x, goal, support, rs):
     else:
         why = "не дотягиваешь до нормы"
     x.note = "НЕУДАЧА x%d: ты %s. Позор, давай лучше!" % (x.fail, why)
-    if x.fail in (3, 10, 30) or x.fail % 50 == 0:
+    if x.i < N_MAIN and (x.fail in (3, 10, 30) or x.fail % 50 == 0):
         say("№%d, ты безнадёжно слаб: %s (%d поколений подряд). Соберись и делай лучше!" % (x.i + 1, why, x.fail))
 
 
@@ -239,17 +240,34 @@ def old_status(st, goal, support, isl, elapsed):
                  hhmm(st["started"]), hhmm(now), hhmm(now), hhmm(st["started"]), elapsed // 3600, elapsed % 3600 // 60, SECS // 3600),
              "Задача %d из %d: %s, подвес %d" % (st["task"] + 1, len(TASKS), goal, support)]
     for x in isl:
-        lines.append("№%d: T=%ds %s eps=%d best=%.2f sup=%d sigma=%.3f ok=%d mastered=%d (доля сети %.2f)" % (
-            x.i + 1, elapsed, goal, st["gen"], x.last, support, x.cma.sigma, int(x.ok_top * 100), x.master, x.mix) + ("  <- " + x.note if x.note else ""))
+        lines.append(("№%d" % (x.i + 1) if x.i < N_MAIN else "Помощник %s" % "АБ"[x.i - N_MAIN]) + ": T=%ds %s eps=%d best=%.2f sup=%d sigma=%.3f ok=%d mastered=%d (доля сети %.2f)" % (
+            elapsed, goal, st["gen"], x.last, support, x.cma.sigma, int(x.ok_top * 100), x.master, x.mix) + ("  <- " + x.note if x.note else ""))
     return "\n".join(lines)
 
 
 def migrate(isl, say_):
-    """Обмен опытом: двое худших пересаживаются к лучшему, остальные чуть подтягиваются к нему."""
-    order = sorted(range(len(isl)), key=lambda k: -isl[k].ema)
-    best = isl[order[0]]
+    """Обмен опытом. Основные (8): двое худших пересаживаются к лучшему, остальные подтягиваются на 10%.
+    Помощники (2): возвращают найденное, если оно лучше, и снова берут лучшее знание для доработки."""
+    mains = isl[:N_MAIN]
+    helpers = isl[N_MAIN:]
+    order = sorted(range(N_MAIN), key=lambda k: -mains[k].ema)
+    best = mains[order[0]]
+    # 1) помощники возвращают улучшение: лучший помощник заменяет двух худших основных
+    hb = max(helpers, key=lambda h: h.ema)
+    if hb.ema > best.ema + 0.05:
+        for k in order[-2:]:
+            mains[k].cma.m = hb.cma.m.copy()
+            mains[k].cma.sigma = max(hb.cma.sigma, 0.05)
+            mains[k].cma.C[:] = 1.0
+            mains[k].ema = hb.ema - 0.5
+        say_("Помощник %s принёс улучшение (оценка %.2f против %.2f): его знание передано двум слабейшим" % ("А" if hb is helpers[0] else "Б", hb.ema, best.ema))
+        order = sorted(range(N_MAIN), key=lambda k: -mains[k].ema)
+        best = mains[order[0]]
+    # 2) обмен опытом основных
     for k in order[-2:]:
-        x = isl[k]
+        x = mains[k]
+        if x.ema >= best.ema - 0.4:
+            continue   # только что получили знание помощника
         x.cma.m = best.cma.m + x.cma.rng.normal(0, 0.01, N_W)
         x.cma.sigma = max(best.cma.sigma, 0.05)
         x.cma.C[:] = 1.0
@@ -257,8 +275,17 @@ def migrate(isl, say_):
         x.cma.pc[:] = 0
         x.ema = best.ema - 1.0
     for k in order[1:-2]:
-        isl[k].cma.m = 0.9 * isl[k].cma.m + 0.1 * best.cma.m
-    say_("Обмен опытом: №%d лучший; №%d и №%d перешли к нему" % (best.i + 1, isl[order[-1]].i + 1, isl[order[-2]].i + 1))
+        mains[k].cma.m = 0.9 * mains[k].cma.m + 0.1 * best.cma.m
+    # 3) помощники заново питаются знаниями: А берёт лучшего, Б - среднее трёх лучших
+    seeds = [best.cma.m.copy(), np.mean([mains[k].cma.m for k in order[:3]], axis=0)]
+    for h, m in zip(helpers, seeds):
+        h.cma.m = m
+        h.cma.sigma = SIGMAS[h.i]
+        h.cma.C[:] = 1.0
+        h.cma.ps[:] = 0
+        h.cma.pc[:] = 0
+        h.ema = -1e9
+    say_("Обмен опытом: №%d лучший; помощники получили свежие знания" % (best.i + 1))
 
 
 def enter_task(st, isl, ti):
@@ -277,6 +304,8 @@ def enter_task(st, isl, ti):
             x.cma = Cma(N_W, LAM, SIGMAS[x.i], mean=m, seed=400 + x.i + ti)
         st["sup"] = 0
         say("Задача «%s»: начинаю%s" % (t["name"], " с умения «%s»" % t["inherit"] if par else " с нуля"))
+    for h in isl[N_MAIN:]:   # помощники начинают с умения первого основного
+        h.cma = Cma(N_W, LAM, SIGMAS[h.i], mean=isl[0].cma.m.copy(), seed=600 + h.i + ti)
     for x in isl:
         x.ema, x.master, x.ok_streak = -1e9, 0, 0
     st["task"] = ti
@@ -327,7 +356,30 @@ def main(force=False):
             x.cma = Cma(N_W, LAM, SIGMAS[x.i], mean=x.cma.m.copy(), seed=500 + x.i)
             x.ema, x.master, x.ok_streak = -1e9, 0, 0
     else:
-        st = {"task": int(os.environ.get("START_TASK", "0")), "sup": int(os.environ.get("START_SUP", "0")), "gen": 0, "started": time.time(), "isl": None, "task_t0": time.time(), "skills": {}}
+        st = {"task": int(os.environ.get("START_TASK", "0")), "sup": int(os.environ.get("START_SUP", "0")), "gen": 0, "started": time.time(), "isl": None, "task_t0": time.time(), "skills": {}, "v": 5}
+    if st.get("v", 0) < 5:
+        # новая версия (учёт торса, помощники): сохраняем все знания в архив и возвращаемся на строгую стойку
+        ts = time.strftime("%Y%m%d_%H%M", time.gmtime())
+        arc = os.path.join(DATA, "archive", ts)
+        os.makedirs(arc, exist_ok=True)
+        for f in [stf] + glob.glob(os.path.join(DATA, "weights", "*.json")):
+            if os.path.exists(f):
+                shutil.copy(f, arc)
+        say("Знания сохранены в архив: %s" % arc)
+        if st["isl"] is not None and st["task"] < len(TASKS):
+            cur = TASKS[st["task"]]["name"]
+            bm = max(isl[:N_MAIN], key=lambda x: x.ema)
+            st["skills"][cur] = {"means": [x.cma.m.tolist() for x in isl[:N_MAIN]], "sup": st["sup"], "best": bm.cma.m.tolist()}
+        for g in ("jump", "box"):   # их учили с подвесом, который не давал оторваться от земли
+            st["skills"].pop(g, None)
+        st["v"] = 5
+        st["started"] = time.time()
+        st["cycle"] = 0
+        enter_task(st, isl, 0)
+        say("Новый запуск: строгая стойка с учётом торса, умения ног сохранены")
+    elif len(st["isl"] or []) < N_ISL:
+        for h in isl[N_MAIN:]:
+            h.cma = Cma(N_W, LAM, SIGMAS[h.i], mean=isl[0].cma.m.copy(), seed=700 + h.i)
     pool = Pool(godot, work, WORKERS)
     say("Запущено процессов: %d, людей-подходов: %d по %d кандидатов, потолок %d ч" % (WORKERS, N_ISL, LAM + 1, SECS // 3600))
     last_save = 0
@@ -364,20 +416,21 @@ def main(force=False):
                 x.ema = x.last if x.ema < -1e8 else 0.8 * x.ema + 0.2 * x.last
                 x.ok_streak = x.ok_streak + 1 if x.ok_top >= 0.75 else 0
                 x.master = x.master + 1 if (support == 0 and ok[LAM] > 0.5) else 0
-                n_ok_isl += x.ok_streak >= 3
+                if x.i < N_MAIN:
+                    n_ok_isl += x.ok_streak >= 3
                 scold(x, goal, support, rs)
-            best_i = max(range(N_ISL), key=lambda k: isl[k].ema)
-            n_master = sum(x.master >= 10 for x in isl)
-            top_master = max(x.master for x in isl)
+            best_i = max(range(N_MAIN), key=lambda k: isl[k].ema)
+            n_master = sum(x.master >= 10 for x in isl[:N_MAIN])
+            top_master = max(x.master for x in isl[:N_MAIN])
             elapsed = time.time() - st["started"]
             LOG.append("Поколение %d | %s | подвес %d | лучший остров №%d (%.2f) | прошли ступень: %d из %d | освоили: %d (нужно %d) | %.0f с" %
-                       (st["gen"], goal, support, best_i + 1, isl[best_i].ema, n_ok_isl, N_ISL, n_master, T["need"], time.time() - t0))
+                       (st["gen"], goal, support, best_i + 1, isl[best_i].ema, n_ok_isl, N_MAIN, n_master, T["need"], time.time() - t0))
             save_ckpt(work, goal, gait, support, isl, best_i, st["gen"], top_master, T["ep"])
             if st["gen"] % MIGRATE_EVERY == 0:
                 migrate(isl, say)
             in_task_h = (time.time() - st["task_t0"]) / 3600
             done_task = n_master >= T["need"]
-            timeout = in_task_h > T["cap_h"]
+            timeout = T["cap_h"] is not None and in_task_h > T["cap_h"]
             if done_task or timeout:
                 st["skills"][goal] = {"means": [x.cma.m.tolist() for x in isl], "sup": st["sup"],
                                       "best": isl[best_i].cma.m.tolist()}
@@ -388,9 +441,9 @@ def main(force=False):
                     st["cycle"] = st.get("cycle", 0) + 1
                     say(">>> Круг пройден. Начинаю круг %d с накопленными умениями." % (st["cycle"] + 1))
                     enter_task(st, isl, 0)
-            elif n_ok_isl >= N_ISL // 2 and st["sup"] < len(SUPPORTS) - 1:
+            elif n_ok_isl >= N_MAIN // 2 and st["sup"] < len(SUPPORTS) - 1:
                 st["sup"] += 1
-                say(">>> Подвес снижен до %d (прошли ступень %d из %d)" % (SUPPORTS[st["sup"]], n_ok_isl, N_ISL))
+                say(">>> Подвес снижен до %d (прошли ступень %d из %d)" % (SUPPORTS[st["sup"]], n_ok_isl, N_MAIN))
                 for x in isl:
                     x.ok_streak = 0
                     x.cma.sigma = min(max(x.cma.sigma * 1.5, 0.05), 0.3)

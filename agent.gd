@@ -90,6 +90,13 @@ var box_y_fin := 0.0
 # --- проверка на устойчивость: разовый толчок корпуса на шаге push_step
 var push_step := -1
 var push_imp := Vector3.ZERO
+# --- торс (верхний позвонок): следим за наклоном, изгибом относительно таза и раскачкой
+var torso_i := -1
+var torso_rest_inv := Basis()
+var sum_ttilt := 0.0
+var sum_bend := 0.0
+var sum_tw := 0.0
+var tup_last := 1.0
 
 func setup(s, i: int, pos: Vector3) -> void:
     sim = s
@@ -101,6 +108,13 @@ func setup(s, i: int, pos: Vector3) -> void:
         var bn := sk.get_bone_name(b_bone[k])
         if bn.begins_with("hand"):
             hand_i.append(k)
+        if bn.begins_with("spine"):
+            torso_i = k   # последний позвонок = верхняя часть торса
+    if torso_i >= 0:
+        torso_rest_inv = (b_init[torso_i] as Transform3D).basis.inverse()
+    # кожа не должна исчезать из кадра: габариты меша считаются по позе покоя, а люди уходят от неё далеко
+    for mi in human.find_children("*", "MeshInstance3D", true, false):
+        (mi as MeshInstance3D).extra_cull_margin = 5000.0
     n_in = 17 + n_dof
     n_out = n_dof + 3
     label = Label3D.new()
@@ -117,9 +131,9 @@ func _spec(n: String) -> Dictionary:
     var side := -1.0 if n.ends_with("_r") else 1.0
     var b := n.trim_suffix("_l").trim_suffix("_r")
     match b:
-        "spine_01": return {"g": "spine", "m": 4.0, "t": 120.0, "ax": {"x": [-20, 30], "y": [-20, 20], "z": [-15, 15]}}
-        "spine_02": return {"g": "spine", "m": 6.0, "t": 100.0, "ax": {"x": [-15, 20], "z": [-10, 10]}}
-        "spine_03": return {"g": "spine", "m": 12.0, "t": 80.0, "ax": {"x": [-15, 20], "z": [-10, 10]}}
+        "spine_01": return {"g": "spine", "m": 4.0, "t": 180.0, "ax": {"x": [-20, 30], "y": [-20, 20], "z": [-15, 15]}}
+        "spine_02": return {"g": "spine", "m": 6.0, "t": 150.0, "ax": {"x": [-15, 20], "z": [-10, 10]}}
+        "spine_03": return {"g": "spine", "m": 12.0, "t": 120.0, "ax": {"x": [-15, 20], "z": [-10, 10]}}
         "neck_01": return {"g": "neck", "m": 1.0, "t": 20.0, "ax": {"x": [-30, 40], "z": [-30, 30]}}
         "head": return {"g": "neck", "m": 5.0, "t": 12.0, "ax": {"x": [-35, 40], "y": [-60, 60], "z": [-30, 30]}}
         "clavicle": return {"g": "arms", "m": 1.0, "t": 30.0, "ax": {"y": [-15, 15], "z": [-15, 15]}}
@@ -475,6 +489,10 @@ func _sense() -> PackedFloat32Array:
         var rel: Vector3 = R.inverse() * (box.global_position - rb.global_position)
         x.append(clampf(rel.x * 0.6, -1.5, 1.5))
         x.append(clampf(rel.z * 0.6, -1.5, 1.5))
+    elif torso_i >= 0:   # вместо часов (походка задаётся эталоном, часы сети не нужны): наклон торса вперёд/вбок
+        var Rt: Basis = (bodies[torso_i] as RigidBody3D).global_transform.basis * torso_rest_inv
+        x.append(clampf(Rt.y.z * 3.0, -1.5, 1.5))
+        x.append(clampf(Rt.y.x * 3.0, -1.5, 1.5))
     else:
         x.append(sin(t * 6.0))
         x.append(cos(t * 6.0))
@@ -500,6 +518,10 @@ func tick() -> bool:
         eff = 0.0
         held_n = 0
         near_sum = 0.0
+        sum_ttilt = 0.0
+        sum_bend = 0.0
+        sum_tw = 0.0
+        tup_last = 1.0
         held_fin = false
         box_y_fin = 0.0
         start = (b_init[root_i] as Transform3D).origin
@@ -574,6 +596,8 @@ func tick() -> bool:
         var kt: float = SUP_KT[lvl]
         rb.apply_torque(R.y.cross(Vector3.UP) * kt - rb.angular_velocity * (kt * 0.12))
         var fmax: float = SUP_F[lvl] * total_mass * 9.8
+        if goal == "jump":
+            fmax = 0.0   # подвес не должен держать от взлёта: только выравнивает корпус
         var fy := clampf(fmax / 0.12 * (h0 - h) - rb.linear_velocity.y * fmax * 0.12, 0.0, fmax)
         rb.apply_central_force(Vector3(0, fy, 0))
         if lvl >= 2:
@@ -581,6 +605,12 @@ func tick() -> bool:
             rb.apply_torque(Vector3(0, -yaw * kt * 0.5 - rb.angular_velocity.y * kt * 0.06, 0))
     if sim.auto_on and step % 60 == 0:
         _coach(R, h, rb)
+    if torso_i >= 0:
+        var Rt2: Basis = (bodies[torso_i] as RigidBody3D).global_transform.basis * torso_rest_inv
+        tup_last = Rt2.y.y
+        sum_ttilt += 1.0 - Rt2.y.y
+        sum_bend += (Rt2.y - R.y).length()
+        sum_tw += (bodies[torso_i] as RigidBody3D).angular_velocity.length()
     sum_up += maxf(R.y.y, 0.0)
     sum_h += h
     max_h = maxf(max_h, h)
@@ -672,7 +702,19 @@ func score() -> float:
     var pen := 0.0
     if fell and goal != "fly":
         pen = 3.0 * (1.0 - float(step) / float(sim.ep_steps))
-    return _base_score(goal) + imit - pen
+    var n := float(sim.ep_steps)
+    var kt := 0.0
+    var kb := 0.0
+    var kw := 0.0
+    match goal:
+        "stand":
+            kt = 6.0; kb = 3.0; kw = 0.3
+        "walk":
+            kt = 4.0; kb = 2.0; kw = 0.2
+        "jump", "box":
+            kt = 2.0; kb = 1.0; kw = 0.1
+    var tpen := (kt * sum_ttilt + kb * sum_bend + kw * sum_tw) / n
+    return _base_score(goal) + imit - pen - tpen
 
 func _base_score(goal: String) -> float:
     var n := float(sim.ep_steps)

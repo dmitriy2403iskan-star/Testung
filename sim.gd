@@ -904,17 +904,24 @@ func _frame_target() -> Vector3:
             c += 1
     return s / float(maxi(c, 1))
 
+var _dist_sm := 0.0
 func _orbit_dist() -> float:
     if focus >= 0 or agents.size() < 2:
         return cam_dist
-    var cols := mini(agents.size(), COLS)
-    var rows := (agents.size() + COLS - 1) / COLS
-    var span := float(cols - 1) * SPACING + 1.6
+    # дальность считаем по тому, где люди на самом деле (они расходятся, ходят, прыгают), а не по стартовой сетке
+    var c := _frame_target()
+    var r := 0.8
+    for a in agents:
+        var p: Vector3 = a.root_pos()
+        if p.is_finite():
+            r = maxf(r, Vector2(p.x - c.x, p.z - c.z).length())
     var vs := get_viewport().get_visible_rect().size
     var asp := vs.x / maxf(vs.y, 1.0)
     var hf := tan(deg_to_rad(cam.fov * 0.5)) * minf(asp, 1.6)
-    var need := span * 0.5 / hf + 1.0 + float(rows - 1) * ROWD * 0.5
-    return cam_dist * maxf(1.0, need / 4.0)
+    var need := (2.0 * r + 1.6) * 0.5 / hf + 1.0 + r * 0.5
+    var tgt := cam_dist * maxf(1.0, need / 4.0)
+    _dist_sm = tgt if _dist_sm <= 0.0 else lerpf(_dist_sm, tgt, 0.08)
+    return _dist_sm
 
 func _cam_update() -> void:
     if cam_mode == 0:
