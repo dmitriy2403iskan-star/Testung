@@ -36,50 +36,60 @@ def rec_prepare():
     shutil.copy(os.path.join(REC, "ci", "record.gd"), os.path.join(REC, "record.gd"))
 
 
-def rec_job(which, secs, snap):
+def rec_one(which, secs, snap):
+    REC_ST.update(state="идёт", msg="Рендерю %d с видео (%s). Это занимает несколько минут." % (secs, which), t=time.time())
+    rec_prepare()
+    out = os.path.join(REC, "out.avi")
+    if os.path.exists(out):
+        os.remove(out)
+    if not (shutil.which("ffmpeg") and shutil.which("xvfb-run")):   # пакеты не поставились при старте
+        REC_ST["msg"] = "Ставлю xvfb и ffmpeg (1-2 мин)..."
+        r = subprocess.run("apt-get update -qq; DEBIAN_FRONTEND=noninteractive apt-get install -y xvfb ffmpeg "
+                           "libgl1-mesa-dri libglu1-mesa libgl1 libegl1 libxcursor1 libxinerama1 libxrandr2 libxi6",
+                           shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        if not (shutil.which("ffmpeg") and shutil.which("xvfb-run")):
+            raise RuntimeError("apt не поставил пакеты: " + r.stdout[-400:])
+    REC_ST["msg"] = "Рендерю %d с видео (%s). Это занимает несколько минут." % (secs, which)
+    env = dict(os.environ, NO_LLM="1", REPLAY_FILE=snap, FRAMES=str(secs * 30),
+               XDG_DATA_HOME=os.path.join(REC, "xdg"), XDG_CONFIG_HOME=os.path.join(REC, "xdg", "cfg"))
+    cmd = ('nice -n 5 xvfb-run -a -s "-screen 0 720x1280x24" "%s" --rendering-driver opengl3 '
+           '--write-movie %s --fixed-fps 30 --resolution 540x960' % (kaggle_run.get_godot(), out))
+    pr = subprocess.Popen(cmd, shell=True, cwd=REC, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          text=True, start_new_session=True)
+    REC_PROC["p"] = pr
     try:
-        REC_ST.update(state="идёт", msg="Рендерю %d с видео (%s). Это занимает несколько минут." % (secs, which), t=time.time())
-        rec_prepare()
-        out = os.path.join(REC, "out.avi")
-        if os.path.exists(out):
-            os.remove(out)
-        if not (shutil.which("ffmpeg") and shutil.which("xvfb-run")):   # пакеты не поставились при старте
-            REC_ST["msg"] = "Ставлю xvfb и ffmpeg (1-2 мин)..."
-            r = subprocess.run("apt-get update -qq; DEBIAN_FRONTEND=noninteractive apt-get install -y xvfb ffmpeg "
-                               "libgl1-mesa-dri libglu1-mesa libgl1 libegl1 libxcursor1 libxinerama1 libxrandr2 libxi6",
-                               shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            if not (shutil.which("ffmpeg") and shutil.which("xvfb-run")):
-                raise RuntimeError("apt не поставил пакеты: " + r.stdout[-400:])
-        REC_ST["msg"] = "Рендерю %d с видео (%s). Это занимает несколько минут." % (secs, which)
-        env = dict(os.environ, NO_LLM="1", REPLAY_FILE=snap, FRAMES=str(secs * 30),
-                   XDG_DATA_HOME=os.path.join(REC, "xdg"), XDG_CONFIG_HOME=os.path.join(REC, "xdg", "cfg"))
-        cmd = ('nice -n 5 xvfb-run -a -s "-screen 0 720x1280x24" "%s" --rendering-driver opengl3 '
-               '--write-movie %s --fixed-fps 30 --resolution 540x960' % (kaggle_run.get_godot(), out))
-        REC_PROC["cancel"] = False
-        pr = subprocess.Popen(cmd, shell=True, cwd=REC, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                              text=True, start_new_session=True)
-        REC_PROC["p"] = pr
-        try:
-            o, _ = pr.communicate(timeout=3 * 3600)
-        except subprocess.TimeoutExpired:
-            os.killpg(pr.pid, signal.SIGKILL)
-            o, _ = pr.communicate()
-        REC_PROC["p"] = None
-        if REC_PROC["cancel"]:
-            REC_ST.update(state="отменено", msg="Запись отменена")
-            return
+        o, _ = pr.communicate(timeout=3 * 3600)
+    except subprocess.TimeoutExpired:
+        os.killpg(pr.pid, signal.SIGKILL)
+        o, _ = pr.communicate()
+    REC_PROC["p"] = None
+    if REC_PROC["cancel"]:
+        REC_ST.update(state="отменено", msg="Запись отменена")
+        return False
 
-        class r:
-            stdout, returncode = o or "", pr.returncode
-        open(os.path.join(REC, "render.log"), "w").write(r.stdout)
-        if not os.path.exists(out):
-            raise RuntimeError("Godot не создал видео (код %s): %s" % (r.returncode, r.stdout[-500:]))
-        tmp = os.path.join(REC, "video_new.mp4")
-        subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", out, "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                        "-crf", "26", tmp], check=True)
-        os.replace(tmp, os.path.join(kaggle_run.RES, "video.mp4"))
-        REC_ST.update(state="готово", msg="Видео готово (%s, %d с, снято в %s). Скачать: /video.mp4" % (
-            which, secs, time.strftime("%H:%M:%S UTC", time.gmtime(REC_ST["t"]))))
+    class r:
+        stdout, returncode = o or "", pr.returncode
+    open(os.path.join(REC, "render.log"), "w").write(r.stdout)
+    if not os.path.exists(out):
+        raise RuntimeError("Godot не создал видео (код %s): %s" % (r.returncode, r.stdout[-500:]))
+    tmp = os.path.join(REC, "video_new.mp4")
+    subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", out, "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    "-crf", "26", tmp], check=True)
+    os.replace(tmp, os.path.join(kaggle_run.RES, "video_%s.mp4" % which))
+    return True
+
+
+def rec_job(items, secs):
+    """items: [(имя, снимок)]; по очереди снимает каждое. Минимум 5 секунд на каждый вариант."""
+    try:
+        t0 = time.time()
+        done = []
+        for n, (which, snap) in enumerate(items):
+            REC_ST["pos"] = "%d из %d" % (n + 1, len(items))
+            if not rec_one(which, secs, snap):
+                return
+            done.append(which)
+        REC_ST.update(state="готово", msg="Готово: %s (%d с каждое, снято в %s UTC)." % (", ".join(done), secs, time.strftime("%H:%M:%S", time.gmtime(t0))))
     except Exception as e:
         REC_ST.update(state="ошибка", msg="Не вышло: %s" % e)
     finally:
@@ -87,16 +97,21 @@ def rec_job(which, secs, snap):
 
 
 def rec_start(which, secs):
-    f = os.path.join(kaggle_run.WORK, "out", which + ".json")
-    if which not in NAMES or not os.path.exists(f):
-        return "Нет чекпоинта %s (обучение его ещё не сохранило, подожди минуту)" % which
+    names = NAMES if which == "all" else [which]
+    for w in names:
+        if w not in NAMES or not os.path.exists(os.path.join(kaggle_run.WORK, "out", w + ".json")):
+            return "Нет чекпоинта %s (обучение его ещё не сохранило, подожди минуту)" % w
     if not REC_LOCK.acquire(blocking=False):
         return "Запись уже идёт: " + REC_ST["msg"]
+    REC_PROC["cancel"] = False
     os.makedirs(REC, exist_ok=True)
-    snap = os.path.join(REC, "snap.json")
-    shutil.copy(f, snap)   # снимок состояния в момент запроса
-    threading.Thread(target=rec_job, args=(which, secs, snap), daemon=True).start()
-    return "Запись пошла: %s, %d с. Смотри статус на /rec" % (which, secs)
+    items = []
+    for w in names:   # снимки состояния в момент запроса
+        snap = os.path.join(REC, "snap_%s.json" % w)
+        shutil.copy(os.path.join(kaggle_run.WORK, "out", w + ".json"), snap)
+        items.append((w, snap))
+    threading.Thread(target=rec_job, args=(items, secs), daemon=True).start()
+    return "Запись пошла: %s, по %d с. Смотри статус на /rec" % (", ".join(names), secs)
 
 
 def rec_cancel():
@@ -114,8 +129,8 @@ def rec_cancel():
 
 
 def rec_page(note=""):
-    opts = "".join('<option>%s</option>' % n for n in NAMES)
-    link = ' <a href="/video.mp4">Скачать видео</a>' if os.path.exists(os.path.join(kaggle_run.RES, "video.mp4")) else ""
+    opts = "".join('<option value="%s">%s</option>' % (n, t) for n, t in [("all", "Оба (стойка и ходьба)"), ("stand", "stand: стойка"), ("walk", "walk: ходьба")])
+    link = "".join(' <a href="/video_%s.mp4">Скачать %s</a>' % (n, n) for n in NAMES if os.path.exists(os.path.join(kaggle_run.RES, "video_%s.mp4" % n)))
     return ("""<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <body style="font:18px sans-serif;max-width:520px;margin:20px auto;padding:0 12px"><h3>Запись видео</h3>
 <form action=/record><p>Кто: <select name=which>%s</select></p>
