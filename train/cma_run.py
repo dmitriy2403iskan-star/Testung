@@ -19,6 +19,7 @@ N_ISL = 10   # + 2 помощника: берут лучшее знание, д�
 MIXES = [0.3, 0.2, 0.4, 0.25, 0.35, 0.15, 0.5, 0.3, 0.3, 0.3]
 SIGMAS = [0.1, 0.05, 0.2, 0.08, 0.15, 0.1, 0.12, 0.3, 0.03, 0.05]
 MIGRATE_EVERY = 10
+REPEATS = int(os.environ.get("REPEATS", "3"))   # сколько раз прогнать всю цепочку повторно после первого прохода
 N_IN, N_HID, N_OUT = 91, 16, 77
 N_W = N_IN * N_HID + N_HID + N_HID * N_OUT + N_OUT   # 2781
 # need - сколько из 8 людей должны стоять/справляться без подвеса 10 поколений подряд; cap_h - потолок времени на задачу
@@ -236,6 +237,7 @@ def hhmm(t):
 def old_status(st, goal, support, isl, elapsed):
     """Формат как раньше: 'Идёт N мин из M' и строка на каждого из 8 людей (подходов)."""
     now = time.time()
+    goal = goal + (" (%d)" % st["cycle"] if st.get("cycle", 0) else "")
     lines = ["Запуск в %s, сейчас %s: %s - %s = %d:%02d (потолок %d ч, по Киеву)" % (
                  hhmm(st["started"]), hhmm(now), hhmm(now), hhmm(st["started"]), elapsed // 3600, elapsed % 3600 // 60, SECS // 3600),
              "Задача %d из %d: %s, подвес %d" % (st["task"] + 1, len(TASKS), goal, support)]
@@ -437,10 +439,12 @@ def main(force=False):
                 say(">>> Задача «%s» %s. Идём дальше." % (goal, "освоена без подвеса" if done_task else "по времени (%.1f ч), берём лучшее" % in_task_h))
                 if st["task"] + 1 < len(TASKS):
                     enter_task(st, isl, st["task"] + 1)
-                else:   # весь круг пройден: идём на новый круг (стойка снова, но с накопленными умениями)
+                elif st.get("cycle", 0) < REPEATS:   # вся цепочка пройдена: повторяем её ещё раз с накопленными умениями
                     st["cycle"] = st.get("cycle", 0) + 1
-                    say(">>> Круг пройден. Начинаю круг %d с накопленными умениями." % (st["cycle"] + 1))
+                    say(">>> Все задачи пройдены. Повтор %d из %d: stand (%d), walk (%d), jump (%d), box (%d)" % ((st["cycle"], REPEATS) + (st["cycle"],) * 4))
                     enter_task(st, isl, 0)
+                else:
+                    st["task"] += 1   # все повторы пройдены
             elif n_ok_isl >= N_MAIN // 2 and st["sup"] < len(SUPPORTS) - 1:
                 st["sup"] += 1
                 say(">>> Подвес снижен до %d (прошли ступень %d из %d)" % (SUPPORTS[st["sup"]], n_ok_isl, N_MAIN))
@@ -478,7 +482,8 @@ def main(force=False):
     files = ["%s (%.1f МБ)" % (os.path.basename(f), os.path.getsize(f) / 1e6) for f in sorted(glob.glob(os.path.join(wdir, "*.json")))]
     if STOP.is_set():
         open(flag, "w").write("stopped")
-    head = "ОБУЧЕНИЕ ОСТАНОВЛЕНО командой /stop" if STOP.is_set() else "Время вышло (потолок %d ч)" % (SECS // 3600)
+    head = ("ОБУЧЕНИЕ ОСТАНОВЛЕНО командой /stop" if STOP.is_set() else
+            ("ВСЕ ЗАДАЧИ И ВСЕ %d ПОВТОРА ПРОЙДЕНЫ" % REPEATS if st["task"] >= len(TASKS) else "Время вышло (потолок %d ч)" % (SECS // 3600)))
     text = ("%s в %s (по Киеву).\nДошло до: задача %s, поколение %d, подвес %d.\n\nСохранённые веса:\n"
             "  - на диске сервера (не пропадут при перезапуске): %s\n  - файлы: %s\n  - всё одним архивом: /result.zip (открой на этом же адресе)\n"
             "  - состояние обучения (чтобы продолжить): %s\n\nЧтобы продолжить, введи /start. Чтобы не тратить кредиты, останови сервис в Railway.\n" % (
