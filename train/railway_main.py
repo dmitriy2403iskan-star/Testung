@@ -5,10 +5,15 @@
   GET /rec         - страница записи видео: выбрать чекпоинт и длину, нажать "Записать"
   GET /record?which=walk_b&secs=30 - снять видео с текущего состояния обучения (потом /video.mp4)
 Переменные: SECS (по умолчанию 10800), PROCS, PORT (даёт хост)."""
-import os, sys, time, signal, shutil, subprocess, threading, http.server, socketserver
+import os, re, sys, time, signal, shutil, subprocess, threading, http.server, socketserver
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    import numpy  # noqa
+except ImportError:
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "numpy"], check=False)
 import kaggle_run
+import cma_run
 
 PORT = int(os.environ.get("PORT", "8080"))
 ROOT = os.path.abspath(".")
@@ -16,7 +21,7 @@ REC = os.path.abspath("rec")
 REC_ST = {"state": "нет", "msg": "Видео ещё не запрашивали", "t": 0}
 REC_LOCK = threading.Lock()
 REC_PROC = {"p": None, "cancel": False}
-NAMES = ["stand_a", "walk_a", "stand_b", "walk_b"]
+NAMES = ["stand", "walk"]
 
 
 def rec_prepare():
@@ -26,7 +31,7 @@ def rec_prepare():
     os.makedirs(REC, exist_ok=True)
     shutil.copytree(kaggle_run.WORK, REC, dirs_exist_ok=True, ignore=shutil.ignore_patterns("out", "xdg_*"))
     pg = os.path.join(REC, "project.godot")
-    s = open(pg, encoding="utf-8").read().replace('Trainer="*res://train.gd"', 'Recorder="*res://record.gd"')
+    s = re.sub(r'Trainer="\*res://[a-z_]+\.gd"', 'Recorder="*res://record.gd"', open(pg, encoding="utf-8").read())
     open(pg, "w", encoding="utf-8").write(s)
     shutil.copy(os.path.join(REC, "ci", "record.gd"), os.path.join(REC, "record.gd"))
 
@@ -131,7 +136,7 @@ class H(http.server.BaseHTTPRequestHandler):
                     secs = max(5, min(60, int(q.get("secs", "30"))))
                 except ValueError:
                     secs = 30
-                note = rec_start(q.get("which", "walk_b"), secs)
+                note = rec_start(q.get("which", "stand"), secs)
             if path == "/cancel":
                 note = rec_cancel()
             body = rec_page(note)
@@ -168,6 +173,12 @@ def serve():
 if __name__ == "__main__":
     os.makedirs(kaggle_run.RES, exist_ok=True)
     threading.Thread(target=serve, daemon=True).start()
-    kaggle_run.main()
+    try:
+        cma_run.main()
+    except Exception as e:   # сервер остаётся жить, чтобы можно было прочитать ошибку
+        import traceback
+        err = traceback.format_exc()
+        print(err, flush=True)
+        open(os.path.join(kaggle_run.RES, "status.txt"), "w", encoding="utf-8").write("ОШИБКА ОБУЧЕНИЯ:\n" + err)
     print("Обучение закончено; сервер отдаёт результат. Можно остановить сервис.", flush=True)
     threading.Event().wait()   # держим процесс, чтобы можно было скачать result.zip
