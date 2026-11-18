@@ -21,6 +21,8 @@ REC = os.path.abspath("rec")
 REC_ST = {"state": "нет", "msg": "Видео ещё не запрашивали", "t": 0}
 REC_LOCK = threading.Lock()
 REC_PROC = {"p": None, "cancel": False}
+VID_LAST = {}   # имя видео -> когда его в последний раз скачали; через 30 с после этого файл удаляется
+VID_TTL = 30
 NAMES = ["stand", "walk"]
 
 
@@ -130,14 +132,15 @@ def rec_cancel():
 
 def rec_page(note=""):
     opts = "".join('<option value="%s">%s</option>' % (n, t) for n, t in [("all", "Оба (стойка и ходьба)"), ("stand", "stand: стойка"), ("walk", "walk: ходьба")])
-    link = "".join(' <a href="/video_%s.mp4">Скачать %s</a>' % (n, n) for n in NAMES if os.path.exists(os.path.join(kaggle_run.RES, "video_%s.mp4" % n)))
+    link = "".join(' <a href="/video_%s.mp4">Скачать %s (снято в %s)</a>' % (n, n, cma_run.hhmm(os.path.getmtime(os.path.join(kaggle_run.RES, "video_%s.mp4" % n))))
+                   for n in NAMES if os.path.exists(os.path.join(kaggle_run.RES, "video_%s.mp4" % n)))
     return ("""<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <body style="font:18px sans-serif;max-width:520px;margin:20px auto;padding:0 12px"><h3>Запись видео</h3>
 <form action=/record><p>Кто: <select name=which>%s</select></p>
 <p>Секунд: <input name=secs type=number value=30 min=5 max=60></p><button style="font-size:20px">Записать</button></form>
 <p><a href=/cancel style="font-size:18px">Отменить запись</a></p>
 <p>%s</p><p><b>Статус:</b> %s.%s</p><p><a href=/rec>Обновить</a> | <a href=/>Статус обучения</a></p>
-<p style="color:#888;font-size:14px">Берётся последнее сохранение обучения (обновляется раз в минуту). Рендер идёт параллельно с обучением, 30 с видео ≈ 5-15 мин.</p>""" % (opts, note, REC_ST["msg"], link)).encode("utf-8")
+<p style="color:#888;font-size:14px">Берётся последнее сохранение обучения (обновляется раз в минуту). Скачанное видео удаляется через 30 секунд, при новой записи нужно записывать заново. Рендер идёт параллельно с обучением, 30 с видео ≈ 5-15 мин.</p>""" % (opts, note, REC_ST["msg"], link)).encode("utf-8")
 
 
 class H(http.server.BaseHTTPRequestHandler):
@@ -171,12 +174,28 @@ class H(http.server.BaseHTTPRequestHandler):
             ctype = "application/zip" if name.endswith(".zip") else "video/mp4" if name.endswith(".mp4") else "text/plain; charset=utf-8"
         self.send_response(200)
         self.send_header("Content-Type", ctype)
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        self.send_header("Pragma", "no-cache")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+        if path.startswith("/video_") and path.endswith(".mp4"):
+            VID_LAST[path.lstrip("/")] = time.time()
 
     def log_message(self, *a):
         pass
+
+
+def video_cleaner():
+    while True:
+        time.sleep(5)
+        for name, t in list(VID_LAST.items()):
+            if time.time() - t > VID_TTL:
+                try:
+                    os.remove(os.path.join(kaggle_run.RES, name))
+                except OSError:
+                    pass
+                VID_LAST.pop(name, None)
 
 
 def serve():
@@ -188,6 +207,7 @@ def serve():
 if __name__ == "__main__":
     os.makedirs(kaggle_run.RES, exist_ok=True)
     threading.Thread(target=serve, daemon=True).start()
+    threading.Thread(target=video_cleaner, daemon=True).start()
     try:
         cma_run.main()
     except Exception as e:   # сервер остаётся жить, чтобы можно было прочитать ошибку
