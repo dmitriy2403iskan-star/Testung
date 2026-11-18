@@ -29,6 +29,7 @@ TASKS = [
 ]
 SUPPORTS = [3, 2, 1, 0]
 LOG = []
+STOP = threading.Event()   # /stop на странице статуса
 
 
 def say(*a):
@@ -282,7 +283,7 @@ def enter_task(st, isl, ti):
     st["task_t0"] = time.time()
 
 
-def main():
+def main(force=False):
     godot = K.get_godot()
     K.WORK = work = os.path.abspath(os.environ.get("WORKDIR", "work"))
     if os.path.exists(work):
@@ -296,6 +297,14 @@ def main():
     say("Импорт проекта...")
     os.makedirs(DATA, exist_ok=True)
     os.makedirs(K.RES, exist_ok=True)
+    flag = os.path.join(DATA, "stopped")
+    if os.path.exists(flag) and not force:
+        open(os.path.join(K.RES, "status.txt"), "w", encoding="utf-8").write(
+            "Обучение остановлено ранее командой /stop. Чтобы продолжить, введи /start.\nВеса сохранены: %s\n" % os.path.join(DATA, "weights"))
+        say("Обучение остановлено ранее (/stop). Жду команду /start.")
+        return
+    if os.path.exists(flag):
+        os.remove(flag)
     stf = os.path.join(DATA, "state3.json")
     old = os.path.join(DATA, "state2.json")
     isl = [Island(i) for i in range(N_ISL)]
@@ -324,7 +333,7 @@ def main():
     last_save = 0
     rng = np.random.default_rng(7)
     try:
-        while st["task"] < len(TASKS) and time.time() - st["started"] < SECS:
+        while st["task"] < len(TASKS) and time.time() - st["started"] < SECS and not STOP.is_set():
             T = TASKS[st["task"]]
             goal, gait = T["name"], T["gait"]
             support = SUPPORTS[st["sup"]]
@@ -375,8 +384,10 @@ def main():
                 say(">>> Задача «%s» %s. Идём дальше." % (goal, "освоена без подвеса" if done_task else "по времени (%.1f ч), берём лучшее" % in_task_h))
                 if st["task"] + 1 < len(TASKS):
                     enter_task(st, isl, st["task"] + 1)
-                else:
-                    st["task"] += 1
+                else:   # весь круг пройден: идём на новый круг (стойка снова, но с накопленными умениями)
+                    st["cycle"] = st.get("cycle", 0) + 1
+                    say(">>> Круг пройден. Начинаю круг %d с накопленными умениями." % (st["cycle"] + 1))
+                    enter_task(st, isl, 0)
             elif n_ok_isl >= N_ISL // 2 and st["sup"] < len(SUPPORTS) - 1:
                 st["sup"] += 1
                 say(">>> Подвес снижен до %d (прошли ступень %d из %d)" % (SUPPORTS[st["sup"]], n_ok_isl, N_ISL))
@@ -394,18 +405,34 @@ def main():
                 text = old_status(st, goal2, SUPPORTS[st["sup"]], isl, elapsed)
                 print(text, flush=True)
                 open(os.path.join(K.RES, "status.txt"), "w", encoding="utf-8").write(text + "\nЗаписать видео: /rec\n")
+                os.makedirs(os.path.join(DATA, "weights"), exist_ok=True)
+                for f in glob.glob(os.path.join(work, "out", "*.json")):
+                    shutil.copy(f, os.path.join(DATA, "weights", os.path.basename(f)))
                 if os.path.exists(os.path.join(work, "out", goal2 + ".json")):
                     shutil.copy(os.path.join(work, "out", goal2 + ".json"), K.RES)
         json.dump(st, open(stf, "w"))
     finally:
         pool.stop()
-    done = st["task"] >= len(TASKS)
-    open(os.path.join(K.RES, "status.txt"), "w", encoding="utf-8").write(
-        ("ГОТОВО: все задачи освоены\n" if done else "Время вышло\n") + "\n".join(LOG[-10:]) + "\nСкачать: /result.zip\n")
+    json.dump(st, open(stf, "w"))
+    wdir = os.path.join(DATA, "weights")
+    os.makedirs(wdir, exist_ok=True)
+    for f in glob.glob(os.path.join(work, "out", "*.json")):
+        shutil.copy(f, os.path.join(wdir, os.path.basename(f)))
     import zipfile
     with zipfile.ZipFile("result.zip", "w", zipfile.ZIP_DEFLATED) as z:
-        for f in glob.glob(os.path.join(work, "out", "*.json")) + [stf]:
+        for f in glob.glob(os.path.join(wdir, "*.json")) + [stf]:
             z.write(f, os.path.basename(f))
+    files = ["%s (%.1f МБ)" % (os.path.basename(f), os.path.getsize(f) / 1e6) for f in sorted(glob.glob(os.path.join(wdir, "*.json")))]
+    if STOP.is_set():
+        open(flag, "w").write("stopped")
+    head = "ОБУЧЕНИЕ ОСТАНОВЛЕНО командой /stop" if STOP.is_set() else "Время вышло (потолок %d ч)" % (SECS // 3600)
+    text = ("%s в %s (по Киеву).\nДошло до: задача %s, поколение %d, подвес %d.\n\nСохранённые веса:\n"
+            "  - на диске сервера (не пропадут при перезапуске): %s\n  - файлы: %s\n  - всё одним архивом: /result.zip (открой на этом же адресе)\n"
+            "  - состояние обучения (чтобы продолжить): %s\n\nЧтобы продолжить, введи /start. Чтобы не тратить кредиты, останови сервис в Railway.\n" % (
+                head, hhmm(time.time()), TASKS[min(st["task"], len(TASKS) - 1)]["name"], st["gen"], SUPPORTS[st["sup"]], wdir,
+                ", ".join(files) or "нет", stf))
+    open(os.path.join(K.RES, "status.txt"), "w", encoding="utf-8").write(text)
+    print(text, flush=True)
     say("ГОТОВО")
 
 

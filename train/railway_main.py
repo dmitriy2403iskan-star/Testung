@@ -5,7 +5,7 @@
   GET /rec         - страница записи видео: выбрать чекпоинт и длину, нажать "Записать"
   GET /record?which=walk_b&secs=30 - снять видео с текущего состояния обучения (потом /video.mp4)
 Переменные: SECS (по умолчанию 10800), PROCS, PORT (даёт хост)."""
-import os, re, glob, sys, time, signal, shutil, subprocess, threading, http.server, socketserver
+import os, re, glob, sys, json, urllib.parse, time, signal, shutil, subprocess, threading, http.server, socketserver
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
@@ -23,6 +23,22 @@ REC_LOCK = threading.Lock()
 REC_PROC = {"p": None, "cancel": False}
 VID_TTL = 1200   # история записей: видео живёт 20 минут, потом удаляется
 NAMES = ["stand", "walk", "jump", "box"]
+
+
+def rec_banner():
+    """Понятная плашка про видео для страницы статуса."""
+    st, now = REC_ST["state"], time.time()
+    if st == "нет":
+        return "🎥 Видео: не записывается. Запись: ссылка «Записать видео» или команда /rec stand 30"
+    mins = int((now - REC_ST.get("began", REC_ST["t"])) / 60)
+    began = cma_run.hhmm(REC_ST.get("began", REC_ST["t"]))
+    if st == "идёт":
+        return "🎥 ВИДЕО ЗАПИСЫВАЕТСЯ (%s). Начато в %s, идёт %d мин. %s. Отмена: /cancel" % (REC_ST.get("pos", ""), began, mins, REC_ST["msg"])
+    if st == "готово":
+        return "✅ ВИДЕО ГОТОВО. %s Смотри историю на /rec (хранится 20 минут)." % REC_ST["msg"]
+    if st == "отменено":
+        return "⏹ Запись видео отменена."
+    return "❌ ВИДЕО НЕ ВЫШЛО: %s" % REC_ST["msg"]
 
 
 def rec_prepare():
@@ -84,13 +100,14 @@ def rec_job(items, secs):
     """items: [(имя, снимок)]; по очереди снимает каждое. Минимум 5 секунд на каждый вариант."""
     try:
         t0 = time.time()
+        REC_ST["began"] = t0
         done = []
         for n, (which, snap) in enumerate(items):
             REC_ST["pos"] = "%d из %d" % (n + 1, len(items))
             if not rec_one(which, secs, snap):
                 return
             done.append(which)
-        REC_ST.update(state="готово", msg="Готово: %s (%d с каждое, снято в %s UTC)." % (", ".join(done), secs, time.strftime("%H:%M:%S", time.gmtime(t0))))
+        REC_ST.update(state="готово", msg="Готово: %s (%d с каждое, начато в %s по Киеву)." % (", ".join(done), secs, cma_run.hhmm(t0)))
     except Exception as e:
         REC_ST.update(state="ошибка", msg="Не вышло: %s" % e)
     finally:
@@ -148,10 +165,102 @@ def rec_page(note=""):
 <p style="color:#888;font-size:14px">Берётся последнее сохранение обучения (обновляется раз в минуту). История записей хранится 20 минут, потом старые удаляются. Рендер идёт параллельно с обучением, 30 с видео ≈ 5-15 мин.</p>""" % (opts, note, REC_ST["msg"], link)).encode("utf-8")
 
 
+TRAIN = {"thread": None}
+
+
+def train_start(force):
+    def run():
+        try:
+            cma_run.main(force=force)
+        except Exception:   # сервер остаётся жить, чтобы можно было прочитать ошибку
+            import traceback
+            err = traceback.format_exc()
+            print(err, flush=True)
+            open(os.path.join(kaggle_run.RES, "status.txt"), "w", encoding="utf-8").write("ОШИБКА ОБУЧЕНИЯ:\n" + err)
+    t = threading.Thread(target=run, daemon=True)
+    TRAIN["thread"] = t
+    t.start()
+
+
+def status_text():
+    f = os.path.join(kaggle_run.RES, "status.txt")
+    return open(f, encoding="utf-8").read() if os.path.exists(f) else "Запускается, жди 1-2 минуты...\n"
+
+
+HELP = ("Команды:\n/stop - остановить обучение (веса сохраняются, скажу где)\n/start - продолжить остановленное обучение\n"
+        "/rec stand 30 - записать видео (stand, walk, jump, box или all; секунд 5-60)\n/cancel - отменить запись видео\n"
+        "/status - показать статус\n/help - эта подсказка")
+
+
+def run_cmd(raw):
+    parts = raw.strip().split()
+    if not parts:
+        return HELP
+    c = parts[0].lower().lstrip("/")
+    alive = TRAIN["thread"] is not None and TRAIN["thread"].is_alive()
+    if c in ("help", "?", "h"):
+        return HELP
+    if c == "stop":
+        if not alive:
+            return "Обучение уже не идёт. Сохранённые веса: смотри статус."
+        cma_run.STOP.set()
+        return "Останавливаю обучение. Закончу текущее поколение (до минуты), сохраню веса и покажу в статусе, где они лежат."
+    if c == "start":
+        if alive:
+            return "Обучение уже идёт."
+        cma_run.STOP.clear()
+        train_start(True)
+        return "Запускаю обучение с сохранённого места. Первые строки статуса появятся через 1-2 минуты."
+    if c == "rec":
+        which = parts[1] if len(parts) > 1 else "all"
+        try:
+            secs = max(5, min(60, int(parts[2]))) if len(parts) > 2 else 30
+        except ValueError:
+            secs = 30
+        return rec_start(which, secs)
+    if c == "cancel":
+        return rec_cancel()
+    if c == "status":
+        return status_text()
+    return "Не знаю команду «%s».\n%s" % (raw.strip(), HELP)
+
+
+PAGE = """<!doctype html><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
+<title>Обучение</title><body style="font:15px sans-serif;margin:0;padding:10px;max-width:760px">
+<div id=banner style="padding:10px;border-radius:8px;background:#e8f1ff;margin-bottom:8px;white-space:pre-wrap"></div>
+<pre id=st style="white-space:pre-wrap;word-break:break-word;font:13px monospace"></pre>
+<form id=f style="position:sticky;bottom:0;background:#fff;padding:8px 0;display:flex;gap:6px">
+<input id=c placeholder="команда, например /stop" autocomplete=off style="flex:1;font-size:18px;padding:8px">
+<button style="font-size:18px">OK</button></form>
+<div id=r style="white-space:pre-wrap;color:#06c;margin:6px 0"></div>
+<div style="color:#888;font-size:13px">Команды: /stop /start /rec stand 30 /cancel /help. <a href=/rec>Страница записи видео</a></div>
+<script>
+async function upd(){try{const j=await (await fetch('/state.json',{cache:'no-store'})).json();
+document.getElementById('banner').textContent=j.banner;document.getElementById('st').textContent=j.status;}catch(e){}}
+document.getElementById('f').onsubmit=async e=>{e.preventDefault();const v=document.getElementById('c').value;if(!v)return;
+document.getElementById('c').value='';const t=await (await fetch('/cmd?c='+encodeURIComponent(v),{cache:'no-store'})).text();
+document.getElementById('r').textContent=t;upd();};
+upd();setInterval(upd,8000);
+</script>"""
+
+
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         path, _, qs = self.path.partition("?")
-        if path in ("/rec", "/record", "/cancel"):
+        if path == "/":
+            body = PAGE.encode("utf-8")
+            ctype = "text/html; charset=utf-8"
+        elif path == "/state.json":
+            body = json.dumps({"banner": rec_banner(), "status": status_text()}, ensure_ascii=False).encode("utf-8")
+            ctype = "application/json; charset=utf-8"
+        elif path == "/cmd":
+            q = urllib.parse.parse_qs(qs)
+            body = run_cmd((q.get("c") or [""])[0]).encode("utf-8")
+            ctype = "text/plain; charset=utf-8"
+        elif path in ("/stop", "/start"):
+            body = run_cmd(path).encode("utf-8")
+            ctype = "text/plain; charset=utf-8"
+        elif path in ("/rec", "/record", "/cancel"):
             q = dict(p.split("=", 1) for p in qs.split("&") if "=" in p)
             note = ""
             if path == "/record":
@@ -164,7 +273,7 @@ class H(http.server.BaseHTTPRequestHandler):
                 note = rec_cancel()
             body = rec_page(note)
             ctype = "text/html; charset=utf-8"
-        elif path in ("/", "/status"):
+        elif path == "/status":
             f = os.path.join(kaggle_run.RES, "status.txt")
             body = open(f, "rb").read() if os.path.exists(f) else "Запускается, жди 1-2 минуты...\n".encode()
             body += "\nЗаписать видео: /rec\n".encode("utf-8")
@@ -210,12 +319,11 @@ if __name__ == "__main__":
     os.makedirs(kaggle_run.RES, exist_ok=True)
     threading.Thread(target=serve, daemon=True).start()
     threading.Thread(target=video_cleaner, daemon=True).start()
-    try:
-        cma_run.main()
-    except Exception as e:   # сервер остаётся жить, чтобы можно было прочитать ошибку
-        import traceback
-        err = traceback.format_exc()
-        print(err, flush=True)
-        open(os.path.join(kaggle_run.RES, "status.txt"), "w", encoding="utf-8").write("ОШИБКА ОБУЧЕНИЯ:\n" + err)
-    print("Обучение закончено; сервер отдаёт результат. Можно остановить сервис.", flush=True)
-    threading.Event().wait()   # держим процесс, чтобы можно было скачать result.zip
+    train_start(False)
+    last = None
+    while True:   # плашка про видео дублируется в логи сервера при каждой смене состояния
+        time.sleep(5)
+        key = (REC_ST["state"], REC_ST.get("pos"), REC_ST["msg"])
+        if key != last and REC_ST["state"] != "нет":
+            print(rec_banner(), flush=True)
+            last = key
