@@ -141,7 +141,7 @@ class Pool:
                         except Exception:
                             continue
                         if r["gen"] == gen and r["chunk"] == ci:
-                            res[ci] = {k: np.array(r[k], dtype=float) for k in ("scores", "ok", "fwd", "h")}
+                            res[ci] = {k: np.array(r[k], dtype=float) for k in ("scores", "ok", "fwd", "h", "fell", "up")}
                             break
                     if self.procs[wi].poll() is not None or time.time() - t0 > 900:
                         raise RuntimeError("рабочий процесс %d умер или завис" % wi)
@@ -174,6 +174,32 @@ def save_ckpt(work, goal, gait, support, isl, best_i, gen, mastered, ep=6.0):
     os.replace(tmp, os.path.join(work, "out", goal + ".json"))
 
 
+def scold(x, goal, support, rs):
+    """Жёсткий разбор неудачников: текст в лог и статус (сеть текст не читает; настоящий сигнал - штраф в оценке)."""
+    fell = float(np.concatenate([r["fell"] for r in rs]).mean())
+    up = float(np.concatenate([r["up"] for r in rs]).mean())
+    h = float(np.concatenate([r["h"] for r in rs]).mean())
+    fwd = float(np.concatenate([r["fwd"] for r in rs]).mean())
+    if x.ok_top > 0:
+        x.fail = 0
+        x.note = ""
+        return
+    x.fail += 1
+    if fell > 0.5:
+        why = "падаешь на пол, %d%% твоих вариантов лежат" % int(fell * 100)
+    elif up < 0.9:
+        why = "кренишься, корпус заваливается (наклон %.2f)" % up
+    elif h < 0.8 * 0.9:
+        why = "приседаешь и проседаешь, не держишь рост"
+    elif goal == "walk" and fwd < 1.0:
+        why = "топчешься на месте, прошёл %.1f м" % fwd
+    else:
+        why = "не дотягиваешь до нормы"
+    x.note = "НЕУДАЧА x%d: ты %s. Позор, давай лучше!" % (x.fail, why)
+    if x.fail in (3, 10, 30) or x.fail % 50 == 0:
+        say("№%d, ты безнадёжно слаб: %s (%d поколений подряд). Соберись и делай лучше!" % (x.i + 1, why, x.fail))
+
+
 class Island:
     """Один «человек»: свой CMA-ES, своя доля нейросети поверх позы, свой стартовый шаг."""
     def __init__(self, i, mean=None):
@@ -186,6 +212,8 @@ class Island:
         self.master = 0
         self.last = 0.0
         self.mean_score = 0.0
+        self.fail = 0
+        self.note = ""
 
     def dump(self):
         return {"cma": self.cma.dump(), "ema": self.ema, "master": self.master, "ok_streak": self.ok_streak}
@@ -211,7 +239,7 @@ def old_status(st, goal, support, isl, elapsed):
              "Задача %d из %d: %s, подвес %d" % (st["task"] + 1, len(TASKS), goal, support)]
     for x in isl:
         lines.append("№%d: T=%ds %s eps=%d best=%.2f sup=%d sigma=%.3f ok=%d mastered=%d (доля сети %.2f)" % (
-            x.i + 1, elapsed, goal, st["gen"], x.last, support, x.cma.sigma, int(x.ok_top * 100), x.master, x.mix))
+            x.i + 1, elapsed, goal, st["gen"], x.last, support, x.cma.sigma, int(x.ok_top * 100), x.master, x.mix) + ("  <- " + x.note if x.note else ""))
     return "\n".join(lines)
 
 
@@ -328,6 +356,7 @@ def main():
                 x.ok_streak = x.ok_streak + 1 if x.ok_top >= 0.75 else 0
                 x.master = x.master + 1 if (support == 0 and ok[LAM] > 0.5) else 0
                 n_ok_isl += x.ok_streak >= 3
+                scold(x, goal, support, rs)
             best_i = max(range(N_ISL), key=lambda k: isl[k].ema)
             n_master = sum(x.master >= 10 for x in isl)
             top_master = max(x.master for x in isl)

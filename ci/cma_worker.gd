@@ -78,6 +78,8 @@ func _physics_process(_d):
     var ok := []
     var fwd := []
     var hm := []
+    var fell_l := []
+    var up_l := []
     for i in n:
         var a = sim.agents[i]
         sc.append(a.res)
@@ -100,7 +102,9 @@ func _physics_process(_d):
         ok.append(1 if good else 0)
         fwd.append(a.fin_fwd)
         hm.append(h)
-    var out := {"gen": job["gen"], "chunk": job["chunk"], "scores": sc, "ok": ok, "fwd": fwd, "h": hm}
+        fell_l.append(1 if a.fell else 0)
+        up_l.append(a.fin_up)
+    var out := {"gen": job["gen"], "chunk": job["chunk"], "scores": sc, "ok": ok, "fwd": fwd, "h": hm, "fell": fell_l, "up": up_l}
     var tmp := wdir + "/res.tmp"
     var fa := FileAccess.open(tmp, FileAccess.WRITE)
     fa.store_string(JSON.stringify(out))

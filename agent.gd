@@ -668,7 +668,11 @@ func score() -> float:
     var imit := 0.0
     if sim.gait_on and sim.gait_n > 0:
         imit = 3.0 * sum_im / float(sim.ep_steps)   # награда за повторение эталонной походки/позы
-    return _base_score(goal) + imit
+    # чёткий штраф за падение: чем раньше упал, тем больнее (раньше это терялось внутри средних значений)
+    var pen := 0.0
+    if fell and goal != "fly":
+        pen = 3.0 * (1.0 - float(step) / float(sim.ep_steps))
+    return _base_score(goal) + imit - pen
 
 func _base_score(goal: String) -> float:
     var n := float(sim.ep_steps)
