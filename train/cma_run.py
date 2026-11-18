@@ -4,7 +4,7 @@
 в DATA_DIR (на Railway - том /data), после перезапуска обучение продолжается с того же места.
 Переменные: SECS (потолок времени, сек), WORKERS (процессов Godot), LAM (кандидатов на человека; их 8 с разными подходами, раз в 10 поколений обмен опытом),
 DATA_DIR."""
-import os, sys, time, json, shutil, subprocess, threading, queue, glob
+import os, sys, time, json, datetime, shutil, subprocess, threading, queue, glob
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -189,9 +189,19 @@ class Island:
         self.ema, self.master, self.ok_streak = d["ema"], d["master"], d["ok_streak"]
 
 
+def hhmm(t):
+    try:
+        from zoneinfo import ZoneInfo
+        return datetime.datetime.fromtimestamp(t, ZoneInfo("Europe/Kiev")).strftime("%H:%M")
+    except Exception:   # нет базы часовых поясов: киевское зимнее время UTC+2
+        return datetime.datetime.utcfromtimestamp(t + 2 * 3600).strftime("%H:%M")
+
+
 def old_status(st, goal, support, isl, elapsed):
     """Формат как раньше: 'Идёт N мин из M' и строка на каждого из 8 людей (подходов)."""
-    lines = ["Идёт %d мин из %d" % (elapsed / 60, SECS / 60),
+    now = time.time()
+    lines = ["Запуск в %s, сейчас %s: %s - %s = %d:%02d (потолок %d ч, по Киеву)" % (
+                 hhmm(st["started"]), hhmm(now), hhmm(now), hhmm(st["started"]), elapsed // 3600, elapsed % 3600 // 60, SECS // 3600),
              "Задача %d из %d: %s, подвес %d" % (st["task"] + 1, len(TASKS), goal, support)]
     for x in isl:
         lines.append("№%d: T=%ds %s eps=%d best=%.2f sup=%d sigma=%.3f ok=%d mastered=%d (доля сети %.2f)" % (
@@ -231,21 +241,21 @@ def main():
     os.makedirs(DATA, exist_ok=True)
     os.makedirs(K.RES, exist_ok=True)
     stf = os.path.join(DATA, "state2.json")   # другой формат, чем у прошлой версии (одна модель)
-    st = {"task": 0, "sup": 0, "gen": 0, "sup_streak": 0, "elapsed": 0.0, "isl": None}
+    st = {"task": 0, "sup": 0, "gen": 0, "sup_streak": 0, "elapsed": 0.0, "isl": None, "started": time.time()}
     isl = [Island(i) for i in range(N_ISL)]
     if os.path.exists(stf):
         st = json.load(open(stf))
         for x, d in zip(isl, st["isl"]):
             x.load(d)
         say("Продолжаю с сохранения: задача %d, подвес %d, поколение %d" % (st["task"] + 1, SUPPORTS[st["sup"]], st["gen"]))
-    st["elapsed"] = min(st["elapsed"], st["gen"] * 70.0)   # прошлая версия считала время с ошибкой
-    el0 = st["elapsed"]
+    if "started" not in st:   # старое сохранение: время запуска оцениваем по числу поколений
+        st["started"] = datetime.datetime(2026, 11, 18, 6, 27, 37, tzinfo=datetime.timezone.utc).timestamp()   # реальный старт этого обучения
     pool = Pool(godot, work, WORKERS)
     say("Запущено процессов: %d, людей-подходов: %d по %d кандидатов, потолок %d мин" % (WORKERS, N_ISL, LAM + 1, SECS // 60))
     t_run = time.time()
     last_save = 0
     try:
-        while st["task"] < len(TASKS) and el0 + time.time() - t_run < SECS:
+        while st["task"] < len(TASKS) and time.time() - st["started"] < SECS:
             goal, gait = TASKS[st["task"]]
             support = SUPPORTS[st["sup"]]
             t0 = time.time()
@@ -275,7 +285,7 @@ def main():
                 n_ok_isl += x.ok_streak >= 3
             best_i = max(range(N_ISL), key=lambda k: isl[k].ema)
             top_master = max(x.master for x in isl)
-            elapsed = el0 + time.time() - t_run
+            elapsed = time.time() - st["started"]
             LOG.append("Поколение %d | %s | подвес %d | лучший остров №%d (%.2f) | прошли ступень: %d из %d | стоят подряд (макс.): %d/10 | %.0f с" %
                        (st["gen"], goal, support, best_i + 1, isl[best_i].ema, n_ok_isl, N_ISL, top_master, time.time() - t0))
             save_ckpt(work, goal, gait, support, isl, best_i, st["gen"], top_master)
