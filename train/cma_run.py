@@ -4,7 +4,7 @@
 в DATA_DIR (на Railway - том /data), после перезапуска обучение продолжается с того же места.
 Переменные: SECS (потолок времени, сек), WORKERS (процессов Godot), LAM (кандидатов на человека; их 8 с разными подходами, раз в 10 поколений обмен опытом),
 DATA_DIR."""
-import os, sys, time, json, datetime, shutil, subprocess, threading, queue, glob
+import urllib.request, os, sys, time, json, datetime, shutil, subprocess, threading, queue, glob
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -13,6 +13,8 @@ import kaggle_run as K
 DATA = os.path.abspath(os.environ.get("DATA_DIR", "state"))
 SECS = int(os.environ.get("SECS", "43200"))
 WORKERS = int(os.environ.get("WORKERS", os.cpu_count() or 2))
+REMOTES = [u for u in os.environ.get("REMOTE_URLS", "").split(",") if u.strip()]   # адреса удалённых воркеров (второй хостинг)
+REMOTE_SLOTS = int(os.environ.get("REMOTE_SLOTS", "2"))
 LAM = int(os.environ.get("LAM", "15"))   # кандидатов на остров (+1 слот под текущую модель = 16 = 2 чанка)
 N_MAIN = 8   # основные люди (их видно на видео)
 N_ISL = 10   # + 2 помощника: берут лучшее знание, дорабатывают отдельно и возвращают, если вышло лучше
@@ -118,6 +120,7 @@ class Cma:
 class Pool:
     def __init__(self, godot, work, n):
         self.dirs, self.procs = [], []
+        self.remote_done, self.remote_err = 0, ""
         for i in range(n):
             d = os.path.join(work, "w%d" % i)
             os.makedirs(d, exist_ok=True)
@@ -168,11 +171,39 @@ class Pool:
                     if self.procs[wi].poll() is not None or time.time() - t0 > 900:
                         raise RuntimeError("рабочий процесс %d умер или завис" % wi)
 
-        ths = [threading.Thread(target=run, args=(i,)) for i in range(len(self.dirs))]
-        for t in ths:
-            t.start()
-        for t in ths:
-            t.join()
+        def remote(url):
+            while True:
+                try:
+                    ci = q.get_nowait()
+                except queue.Empty:
+                    return
+                task = {"gen": gen, "chunk": ci, "goal": goal, "gait": gait, "support": support,
+                        "mix": chunks[ci][1], **(extra or {}), "cands": [np.round(x, 4).tolist() for x in chunks[ci][0]]}
+                try:
+                    req = urllib.request.Request(url.rstrip("/") + "/eval", data=json.dumps(task).encode(),
+                                                 headers={"X-Token": os.environ.get("WTOKEN", "")})
+                    r = json.loads(urllib.request.urlopen(req, timeout=600).read())
+                    res[ci] = {k: np.array(r[k], dtype=float) for k in ("scores", "ok", "fwd", "h", "fell", "up")}
+                    self.remote_done += 1
+                except Exception as e:   # удалённый хост недоступен: чанк вернётся в очередь, посчитают свои
+                    self.remote_err = str(e)[:80]
+                    q.put(ci)
+                    return
+
+        for attempt in range(3):
+            ths = [threading.Thread(target=run, args=(i,)) for i in range(len(self.dirs))]
+            if attempt == 0:
+                for url in REMOTES:
+                    ths += [threading.Thread(target=remote, args=(url,)) for _ in range(REMOTE_SLOTS)]
+            for t in ths:
+                t.start()
+            for t in ths:
+                t.join()
+            if all(r is not None for r in res):
+                break
+            for ci in range(len(chunks)):   # недосчитанное досчитывают свои процессы
+                if res[ci] is None and ci not in list(q.queue):
+                    q.put(ci)
         if any(r is None for r in res):
             raise RuntimeError("не все кандидаты посчитаны")
         return res
@@ -402,7 +433,7 @@ def main(force=False):
         for h in isl[N_MAIN:]:
             h.cma = Cma(N_W, LAM, SIGMAS[h.i], mean=isl[0].cma.m.copy(), seed=700 + h.i)
     pool = Pool(godot, work, WORKERS)
-    say("Запущено процессов: %d, людей-подходов: %d по %d кандидатов, потолок %d ч" % (WORKERS, N_ISL, LAM + 1, SECS // 3600))
+    say("Запущено процессов: %d, удалённых хостов: %d (по %d процесса), людей-подходов: %d по %d кандидатов, потолок %d ч" % (WORKERS, len(REMOTES), REMOTE_SLOTS, N_ISL, LAM + 1, SECS // 3600))
     last_save = 0
     rng = np.random.default_rng(7)
     try:
