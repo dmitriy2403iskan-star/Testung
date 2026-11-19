@@ -307,11 +307,12 @@ class Island:
         self.note = ""
 
     def dump(self):
-        return {"cma": self.cma.dump(), "ema": self.ema, "master": self.master, "ok_streak": self.ok_streak}
+        return {"cma": self.cma.dump(), "ema": self.ema, "master": self.master, "ok_streak": self.ok_streak, "mix": self.mix}
 
     def load(self, d):
         self.cma.load(d["cma"])
         self.ema, self.master, self.ok_streak = d["ema"], d["master"], d["ok_streak"]
+        self.mix = d.get("mix", self.mix)
 
 
 def hhmm(t):
@@ -347,6 +348,7 @@ def migrate(isl, say_):
     if hb.ema > best.ema + 0.05:
         for k in order[-2:]:
             mains[k].cma.m = hb.cma.m.copy()
+            mains[k].mix = hb.mix   # веса работают только вместе со своей долей сети
             mains[k].cma.sigma = max(hb.cma.sigma, 0.05)
             mains[k].cma.C[:] = 1.0
             mains[k].ema = hb.ema - 0.5
@@ -359,6 +361,7 @@ def migrate(isl, say_):
         if x.ema >= best.ema - 0.4:
             continue   # только что получили знание помощника
         x.cma.m = best.cma.m + x.cma.rng.normal(0, 0.01, N_W)
+        x.mix = best.mix
         x.cma.sigma = max(best.cma.sigma, 0.05)
         x.cma.C[:] = 1.0
         x.cma.ps[:] = 0
@@ -366,10 +369,13 @@ def migrate(isl, say_):
         x.ema = best.ema - 1.0
     for k in order[1:-2]:
         mains[k].cma.m = 0.9 * mains[k].cma.m + 0.1 * best.cma.m
+        mains[k].mix = 0.9 * mains[k].mix + 0.1 * best.mix
     # 3) помощники заново питаются знаниями: А берёт лучшего, Б - среднее трёх лучших
     seeds = [best.cma.m.copy(), np.mean([mains[k].cma.m for k in order[:3]], axis=0)]
-    for h, m in zip(helpers, seeds):
+    mixes = [best.mix, float(np.mean([mains[k].mix for k in order[:3]]))]
+    for h, m, mx in zip(helpers, seeds, mixes):
         h.cma.m = m
+        h.mix = mx
         h.cma.sigma = SIGMAS[h.i]
         h.cma.C[:] = 1.0
         h.cma.ps[:] = 0
@@ -396,6 +402,7 @@ def enter_task(st, isl, ti):
         say("Задача «%s»: начинаю%s" % (t["name"], " с умения «%s»" % t["inherit"] if par else " с нуля"))
     for h in isl[N_MAIN:]:   # помощники начинают с умения первого основного
         h.cma = Cma(N_W, LAM, SIGMAS[h.i], mean=isl[0].cma.m.copy(), seed=600 + h.i + ti)
+        h.mix = isl[0].mix
     for x in isl:
         x.ema, x.master, x.ok_streak = -1e9, 0, 0
     st["task"] = ti
@@ -470,6 +477,20 @@ def main(force=False):
     elif len(st["isl"] or []) < N_ISL:
         for h in isl[N_MAIN:]:
             h.cma = Cma(N_W, LAM, SIGMAS[h.i], mean=isl[0].cma.m.copy(), seed=700 + h.i)
+    if not st.get("mixfix"):   # разовая починка: доля сети 0.3+ на стойке не работает, все берут долю лучшего стоящего
+        mains = isl[:N_MAIN]
+        bm = max(mains, key=lambda x: x.ema)
+        for x in isl:
+            if x.mix > bm.mix + 0.02 and x.ema < bm.ema - 1.0:
+                x.cma.m = bm.cma.m + x.cma.rng.normal(0, 0.01, N_W)
+                x.mix = bm.mix
+                x.cma.sigma = 0.06
+                x.cma.C[:] = 1.0
+                x.cma.ps[:] = 0
+                x.cma.pc[:] = 0
+                x.ema = bm.ema - 1.0
+        st["mixfix"] = 1
+        say("Починка: застрявшие люди получили веса и долю сети лучшего (№%d, доля %.2f)" % (bm.i + 1, bm.mix))
     pool = Pool(godot, work, WORKERS)
     say("Запущено процессов: %d, удалённых хостов: %d (по %d процесса), людей-подходов: %d по %d кандидатов, потолок %d ч" % (WORKERS, len(REMOTES), REMOTE_SLOTS, N_ISL, LAM + 1, SECS // 3600))
     last_save = 0
@@ -522,6 +543,7 @@ def main(force=False):
                 for x in isl[:N_MAIN]:
                     if x.fail >= 10 and x is not donor:
                         x.cma.m = donor.cma.m + x.cma.rng.normal(0, 0.01, N_W)
+                        x.mix = donor.mix   # раньше доля сети оставалась своей (больше), и пересаженный сразу падал
                         x.cma.sigma = 0.06
                         x.cma.C[:] = 1.0
                         x.cma.ps[:] = 0
