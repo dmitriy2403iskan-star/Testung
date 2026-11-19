@@ -227,6 +227,39 @@ def save_ckpt(work, goal, gait, support, isl, best_i, gen, mastered, ep=6.0, ext
     os.replace(tmp, os.path.join(work, "out", goal + ".json"))
 
 
+EVENTS = []   # события для модуля речи: {"t","i","kind","goal","n"}; модуль читает DATA/events.json и пишет DATA/speech.json
+
+
+def event(i, kind, goal, n=0, info=""):
+    EVENTS.append({"t": time.time(), "i": i, "kind": kind, "goal": goal, "n": n, "info": info})
+    del EVENTS[:-60]
+    try:
+        json.dump(EVENTS, open(os.path.join(DATA, "events.json.tmp"), "w"), ensure_ascii=False)
+        os.replace(os.path.join(DATA, "events.json.tmp"), os.path.join(DATA, "events.json"))
+    except OSError:
+        pass
+
+
+def speech_section():
+    """Отдельный раздел «Реплики»: события тела + то, что сказал модуль речи (DATA/speech.json: [{"i","text","t"}])."""
+    sp = {}
+    try:
+        for r in json.load(open(os.path.join(DATA, "speech.json"))):
+            sp[int(r["i"])] = r
+    except Exception:
+        pass
+    lines = ["", "=== РЕПЛИКИ ==="]
+    for e in EVENTS[-8:]:
+        who = "№%d" % (e["i"] + 1) if e["i"] < N_MAIN else "Помощник"
+        what = {"fell": "упал (%d-е поколение подряд лежит)" % e["n"], "stood": "встал и стоит!", "learned": "освоил задачу"}.get(e["kind"], e["kind"])
+        r = sp.get(e["i"])
+        said = "«%s»" % r["text"] if r and r.get("t", 0) >= e["t"] - 5 else "(модуль речи молчит)"
+        lines.append("[%s] %s, %s: %s %s" % (hhmm(e["t"]), who, e["goal"], what, said))
+    if not EVENTS:
+        lines.append("пока событий нет")
+    return "\n".join(lines) + "\n"
+
+
 def scold(x, goal, support, rs):
     """Жёсткий разбор неудачников: текст в лог и статус (сеть текст не читает; настоящий сигнал - штраф в оценке)."""
     fell = float(np.concatenate([r["fell"] for r in rs]).mean())
@@ -234,10 +267,15 @@ def scold(x, goal, support, rs):
     h = float(np.concatenate([r["h"] for r in rs]).mean())
     fwd = float(np.concatenate([r["fwd"] for r in rs]).mean())
     if x.ok_top > 0:
+        if x.fail >= 1 and x.i < N_MAIN:
+            event(x.i, "stood", goal, x.fail)
+            say("РЕПЛИКА-СОБЫТИЕ: №%d снова справляется (%s)" % (x.i + 1, goal))
         x.fail = 0
         x.note = ""
         return
     x.fail += 1
+    if x.i < N_MAIN and x.fail in (1, 5, 25) and fell > 0.5:
+        event(x.i, "fell", goal, x.fail)
     if fell > 0.5:
         why = "падаешь на пол, %d%% твоих вариантов лежат" % int(fell * 100)
     elif up < 0.9:
@@ -532,7 +570,7 @@ def main(force=False):
                 os.replace(stf + ".tmp", stf)
                 text = old_status(st, goal2, SUPPORTS[st["sup"]], isl, elapsed)
                 print(text, flush=True)
-                open(os.path.join(K.RES, "status.txt"), "w", encoding="utf-8").write(text + "\nЗаписать видео: /rec\n")
+                open(os.path.join(K.RES, "status.txt"), "w", encoding="utf-8").write(text + speech_section() + "\nЗаписать видео: /rec\n")
                 os.makedirs(os.path.join(DATA, "weights"), exist_ok=True)
                 for f in glob.glob(os.path.join(work, "out", "*.json")):
                     shutil.copy(f, os.path.join(DATA, "weights", os.path.basename(f)))
