@@ -591,6 +591,9 @@ def main(force=False):
                 json.dump(st, open(stf + ".tmp", "w"))
                 os.replace(stf + ".tmp", stf)
                 text = old_status(st, goal2, SUPPORTS[st["sup"]], isl, elapsed)
+                if REMOTES:
+                    text += "\nВторой сервер: посчитал %d чанков, поколение %.0f с%s" % (
+                        pool.remote_done, time.time() - t0, (", ошибка: " + pool.remote_err) if pool.remote_err else "")
                 print(text, flush=True)
                 open(os.path.join(K.RES, "status.txt"), "w", encoding="utf-8").write(text + speech_section() + "\nЗаписать видео: /rec\n")
                 os.makedirs(os.path.join(DATA, "weights"), exist_ok=True)
