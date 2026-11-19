@@ -20,14 +20,33 @@ MIXES = [0.3, 0.2, 0.4, 0.25, 0.35, 0.15, 0.5, 0.3, 0.3, 0.3]
 SIGMAS = [0.1, 0.05, 0.2, 0.08, 0.15, 0.1, 0.12, 0.3, 0.03, 0.05]
 MIGRATE_EVERY = 10
 REPEATS = int(os.environ.get("REPEATS", "3"))   # сколько раз прогнать всю цепочку повторно после первого прохода
-N_IN, N_HID, N_OUT = 91, 16, 77
-N_W = N_IN * N_HID + N_HID + N_HID * N_OUT + N_OUT   # 2781
+N_IN, N_HID, N_OUT = 97, 16, 77   # 17 + 74 суставов + 6 командных входов (цель, высота, настроение)
+N_W = N_IN * N_HID + N_HID + N_HID * N_OUT + N_OUT   # 2877
+OLD_IN, OLD_W = 91, 2781   # прошлая версия сети: веса дополняются нулями для новых входов
+
+
+def expand(v, fill=0.0):
+    """Старые веса (91 вход) -> новые (97): новые входы получают нулевые связи, остальное без изменений."""
+    v = np.asarray(v, dtype=float)
+    if v.shape[0] != OLD_W:
+        return v
+    o1 = OLD_IN * N_HID
+    B = np.full((N_HID, N_IN), fill)
+    B[:, :OLD_IN] = v[:o1].reshape(N_HID, OLD_IN)
+    return np.concatenate([B.reshape(-1), v[o1:]])
+
 # need - сколько из 8 людей должны стоять/справляться без подвеса 10 поколений подряд; cap_h - потолок времени на задачу
 TASKS = [
-    {"name": "stand", "gait": "ci/gait_stand.json", "ep": 12.0, "push": 35.0, "inherit": None, "need": 4, "cap_h": None},
-    {"name": "walk", "gait": "ci/gait_walk.json", "ep": 10.0, "push": 20.0, "inherit": "stand", "need": 1, "cap_h": None},
-    {"name": "jump", "gait": "ci/gait_stand.json", "ep": 8.0, "push": 0.0, "inherit": "stand", "need": 1, "cap_h": None},
+    {"name": "stand", "gait": "ci/gait_stand.json", "ep": 12.0, "push": 35.0, "inherit": None, "need": 4, "cap_h": None, "fast": True},
+    {"name": "walk", "gait": "ci/gait_walk.json", "ep": 10.0, "push": 20.0, "inherit": "stand", "need": 1, "cap_h": None, "fast": True},
+    {"name": "jump", "gait": "ci/gait_stand.json", "ep": 8.0, "push": 0.0, "inherit": "stand", "need": 1, "cap_h": None, "fast": True},
     {"name": "box", "gait": "ci/gait_stand.json", "ep": 10.0, "push": 0.0, "inherit": "stand", "need": 1, "cap_h": None},
+    {"name": "carry", "gait": "ci/gait_walk.json", "ep": 12.0, "push": 0.0, "inherit": "box", "need": 1, "cap_h": None},   # сразу после коробки
+    {"name": "goto", "gait": "ci/gait_walk.json", "ep": 8.0, "push": 0.0, "inherit": "walk", "need": 1, "cap_h": None, "fast": True},
+    {"name": "getup", "gait": "ci/gait_stand.json", "ep": 10.0, "push": 0.0, "inherit": "stand", "need": 1, "cap_h": None},
+    {"name": "run", "gait": "ci/gait_run.json", "ep": 8.0, "push": 0.0, "inherit": "walk", "need": 1, "cap_h": None, "fast": True},
+    {"name": "leap", "gait": "ci/gait_stand.json", "ep": 8.0, "push": 0.0, "inherit": "jump", "need": 1, "cap_h": None},
+    {"name": "crouch", "gait": "ci/gait_stand.json", "ep": 10.0, "push": 0.0, "inherit": "stand", "need": 1, "cap_h": None},
 ]
 SUPPORTS = [3, 2, 1, 0]
 LOG = []
@@ -92,7 +111,7 @@ class Cma:
 
     def load(self, d):
         for k in ("m", "C", "ps", "pc"):
-            setattr(self, k, np.array(d[k]))
+            setattr(self, k, expand(d[k], 1.0 if k == "C" else 0.0))
         self.sigma, self.gen = d["sigma"], d["gen"]
 
 
@@ -137,7 +156,7 @@ class Pool:
                 os.replace(tmp, os.path.join(d, "task.json"))
                 t0 = time.time()
                 while True:
-                    time.sleep(0.5)
+                    time.sleep(0.1)
                     if os.path.exists(rp):
                         try:
                             r = json.load(open(rp))
@@ -163,7 +182,7 @@ class Pool:
             p.kill()
 
 
-def save_ckpt(work, goal, gait, support, isl, best_i, gen, mastered, ep=6.0):
+def save_ckpt(work, goal, gait, support, isl, best_i, gen, mastered, ep=6.0, extra=None):
     """Чекпоинт: лучший остров как основное умение + все 8 подходов (для видео)."""
     g = json.load(open(os.path.join(work, gait)))["gait"]
     bi = isl[best_i]
@@ -171,7 +190,7 @@ def save_ckpt(work, goal, gait, support, isl, best_i, gen, mastered, ep=6.0):
     islands = [{"w": [round(float(v), 4) for v in x.cma.m], "mix": x.mix} for x in isl[:N_MAIN]]
     os.makedirs(os.path.join(work, "out"), exist_ok=True)
     r = {"goal": goal, "support": support, "mastered": mastered, "eps": gen, "best": float(bi.ema),
-         "skill": skill, "islands": islands, "ep": ep}
+         "skill": skill, "islands": islands, "ep": ep, "extra": extra or {}}
     tmp = os.path.join(work, "out", goal + ".tmp")
     json.dump(r, open(tmp, "w"))
     os.replace(tmp, os.path.join(work, "out", goal + ".json"))
@@ -296,13 +315,13 @@ def enter_task(st, isl, ti):
     sk = st["skills"].get(t["name"])
     if sk:
         for x, m in zip(isl, sk["means"]):
-            x.cma = Cma(N_W, LAM, SIGMAS[x.i], mean=np.array(m), seed=300 + x.i + ti)
+            x.cma = Cma(N_W, LAM, SIGMAS[x.i], mean=expand(m), seed=300 + x.i + ti)
         st["sup"] = sk["sup"]
         say("Задача «%s»: продолжаю с сохранённого умения, подвес %d" % (t["name"], SUPPORTS[st["sup"]]))
     else:
         par = st["skills"].get(t["inherit"]) if t["inherit"] else None
         for x in isl:
-            m = np.array(par["best"]) if par else None
+            m = expand(par["best"]) if par else None
             x.cma = Cma(N_W, LAM, SIGMAS[x.i], mean=m, seed=400 + x.i + ti)
         st["sup"] = 0
         say("Задача «%s»: начинаю%s" % (t["name"], " с умения «%s»" % t["inherit"] if par else " с нуля"))
@@ -399,7 +418,13 @@ def main(force=False):
                 for c in range(0, len(allx), 8):
                     chunks.append((allx[c:c + 8], x.mix))
                     owner.append(x.i)
-            extra = {"ep": T["ep"]}
+            extra = {"ep": T["ep"] * (0.5 if T.get("fast") and support >= 2 else 1.0)}   # на сильном подвесе эпизоды вдвое короче: быстрее
+            if goal in ("goto", "carry"):   # цель на земле: направление и расстояние новые каждое поколение
+                dd = rng.uniform(2.5, 4.0) if goal == "goto" else rng.uniform(2.5, 3.2)
+                aa = np.deg2rad(rng.uniform(-60, 60) if goal == "goto" else rng.uniform(-40, 40))
+                extra["tgt"] = [float(dd * np.sin(aa)), float(dd * np.cos(aa))]
+            if goal == "getup":
+                extra["lie"] = int(rng.integers(1, 3))
             if T["push"] > 0:   # толчок на 4-й секунде; направление новое каждое поколение, одно для всех в поколении
                 ang = rng.uniform(0, 2 * np.pi)
                 extra.update(push=[float(T["push"] * np.cos(ang)), float(T["push"] * np.sin(ang))], push_t=4.0)
@@ -419,15 +444,29 @@ def main(force=False):
                 x.ok_streak = x.ok_streak + 1 if x.ok_top >= 0.75 else 0
                 x.master = x.master + 1 if (support == 0 and ok[LAM] > 0.5) else 0
                 if x.i < N_MAIN:
-                    n_ok_isl += x.ok_streak >= 3
+                    n_ok_isl += x.ok_streak >= 2
                 scold(x, goal, support, rs)
+            # застрявшие (10+ поколений подряд ни один вариант не справился), пока другие справляются: пересаживаем их к успешному
+            okers = [y for y in isl[:N_MAIN] if y.ok_top > 0]
+            if okers:
+                donor = max(okers, key=lambda y: y.ema)
+                for x in isl[:N_MAIN]:
+                    if x.fail >= 10 and x is not donor:
+                        x.cma.m = donor.cma.m + x.cma.rng.normal(0, 0.01, N_W)
+                        x.cma.sigma = 0.06
+                        x.cma.C[:] = 1.0
+                        x.cma.ps[:] = 0
+                        x.cma.pc[:] = 0
+                        x.fail = 0
+                        x.ema = donor.ema - 1.0
+            st["stall"] = st.get("stall", 0) + 1 if 2 <= n_ok_isl < N_MAIN // 2 else 0
             best_i = max(range(N_MAIN), key=lambda k: isl[k].ema)
             n_master = sum(x.master >= 10 for x in isl[:N_MAIN])
             top_master = max(x.master for x in isl[:N_MAIN])
             elapsed = time.time() - st["started"]
             LOG.append("Поколение %d | %s | подвес %d | лучший остров №%d (%.2f) | прошли ступень: %d из %d | освоили: %d (нужно %d) | %.0f с" %
                        (st["gen"], goal, support, best_i + 1, isl[best_i].ema, n_ok_isl, N_MAIN, n_master, T["need"], time.time() - t0))
-            save_ckpt(work, goal, gait, support, isl, best_i, st["gen"], top_master, T["ep"])
+            save_ckpt(work, goal, gait, support, isl, best_i, st["gen"], top_master, T["ep"], extra)
             if st["gen"] % MIGRATE_EVERY == 0:
                 migrate(isl, say)
             in_task_h = (time.time() - st["task_t0"]) / 3600
@@ -441,11 +480,12 @@ def main(force=False):
                     enter_task(st, isl, st["task"] + 1)
                 elif st.get("cycle", 0) < REPEATS:   # вся цепочка пройдена: повторяем её ещё раз с накопленными умениями
                     st["cycle"] = st.get("cycle", 0) + 1
-                    say(">>> Все задачи пройдены. Повтор %d из %d: stand (%d), walk (%d), jump (%d), box (%d)" % ((st["cycle"], REPEATS) + (st["cycle"],) * 4))
+                    say(">>> Все задачи пройдены. Повтор %d из %d: " % (st["cycle"], REPEATS) + ", ".join("%s (%d)" % (t["name"], st["cycle"]) for t in TASKS))
                     enter_task(st, isl, 0)
                 else:
                     st["task"] += 1   # все повторы пройдены
-            elif n_ok_isl >= N_MAIN // 2 and st["sup"] < len(SUPPORTS) - 1:
+            elif (n_ok_isl >= N_MAIN // 2 or st["stall"] >= 10) and st["sup"] < len(SUPPORTS) - 1:
+                st["stall"] = 0
                 st["sup"] += 1
                 say(">>> Подвес снижен до %d (прошли ступень %d из %d)" % (SUPPORTS[st["sup"]], n_ok_isl, N_MAIN))
                 for x in isl:

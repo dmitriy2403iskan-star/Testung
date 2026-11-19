@@ -18,7 +18,7 @@ func _process(_d):
         sim.sigma = 0.0
         sim.set_physics_process(false)   # эпизодами управляю я
         print("worker ready ", wdir)
-    if sim == null or running or f % 15 != 0:
+    if sim == null or running or f % 4 != 0:
         return
     var tp := wdir + "/task.json"
     if not FileAccess.file_exists(tp):
@@ -53,6 +53,9 @@ func _start_job() -> void:
         a.fell = false
         a.step = -1
         a.mix_override = float(job.get("mix", -1.0))
+        if job.has("tgt"):
+            a.tgt_rel = Vector2(float(job["tgt"][0]), float(job["tgt"][1]))
+        a.lie_mode = int(job.get("lie", 0))
         if job.has("push"):   # одинаковый толчок для всех кандидатов поколения
             a.push_step = int(float(job["push_t"]) * float(Engine.physics_ticks_per_second))
             a.push_imp = Vector3(float(job["push"][0]), 0.0, float(job["push"][1]))
@@ -97,6 +100,18 @@ func _physics_process(_d):
             good = upright_ok and a.peak_clear > 0.15 and a.air_steps >= 10 and drift < 1.0
         elif sim.goal == "box":   # стоит прямо, коробка поднята выше 35 см и удерживается к концу
             good = upright_ok and a.held_fin and a.box_y_fin > 0.35
+        elif sim.goal == "carry":   # донёс: коробка удерживается выше 30 см и он у цели
+            good = upright_ok and a.held_fin and a.box_y_fin > 0.3 and a.tdist_last < 0.8
+        elif sim.goal == "goto":   # дошёл до точки и стоит прямо
+            good = upright_ok and a.tdist_last < 0.7
+        elif sim.goal == "getup":   # встал из лежачего положения и стоит прямо в конце
+            good = upright_ok and drift < 1.5
+        elif sim.goal == "run":   # пробежал >4 м, были фазы полёта
+            good = upright_ok and a.fin_fwd > 4.0 and lat < 1.2 and a.tup_last > 0.9 and a.air_steps >= 5
+        elif sim.goal == "leap":   # перепрыгнул планку и приземлился
+            good = upright_ok and a.crossed and a.fin_fwd > 2.0 and lat < 1.0
+        elif sim.goal == "crouch":   # присел до 72% роста и встал обратно, высота следовала команде
+            good = upright_ok and a.cerr_sum / float(sim.ep_steps) < 0.10 and a.min_crouch < 0.72
         else:
             good = sim._agent_ok(a)
         ok.append(1 if good else 0)

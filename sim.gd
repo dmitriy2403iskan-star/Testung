@@ -4,7 +4,7 @@ extends Node3D
 # вес становится общим. Над каждым человеком метка: стоит/падает и оценка прошлого эпизода.
 
 const AgentS := preload("res://agent.gd")
-const GOALS := {"stand": "СТОЯТЬ", "walk": "ИДТИ", "jump": "ПРЫГАТЬ", "fly": "ЛЕТАТЬ", "box": "КОРОБКА"}
+const GOALS := {"stand": "СТОЯТЬ", "walk": "ИДТИ", "jump": "ПРЫГАТЬ", "fly": "ЛЕТАТЬ", "box": "КОРОБКА", "carry": "НЕСТИ КОРОБКУ", "goto": "ИДТИ В ТОЧКУ", "getup": "ВСТАТЬ", "run": "БЕЖАТЬ", "leap": "ПРЫЖОК ЧЕРЕЗ ПЛАНКУ", "crouch": "ПРИСЕСТЬ"}
 const GROUP_NAMES := {"legs": "Ноги", "toes": "Стопы", "spine": "Корпус", "neck": "Шея", "arms": "Руки", "hands": "Кисти", "fingers": "Пальцы", "thrust": "Тяга"}
 const N_HID := 16
 const MUT_P := 0.05
@@ -156,7 +156,8 @@ func _refresh_active() -> void:
     for k in 3:
         act.append(groups["thrust"] and goal == "fly")
     for a in agents:
-        a.set_box(goal == "box")   # коробка появляется только в этой задаче   # тяга только для полёта: иначе нейросеть "ходит" полётом
+        a.set_box(goal == "box" or goal == "carry")   # коробка появляется только в этих задачах
+        a.set_scene(goal)   # тяга только для полёта: иначе нейросеть "ходит" полётом
 
 # ---------- мир ----------
 func _build_world() -> void:

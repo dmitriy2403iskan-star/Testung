@@ -26,6 +26,11 @@ func _process(_d):
         sim.cam_pitch = 16.0
         if r.has("ep"):
             sim.ep_steps = int(float(r["ep"]) * float(Engine.physics_ticks_per_second))
+        var ex: Dictionary = r.get("extra", {})
+        for a in sim.agents:
+            if ex.has("tgt"):
+                a.tgt_rel = Vector2(float(ex["tgt"][0]), float(ex["tgt"][1]))
+            a.lie_mode = int(ex.get("lie", 0))
         if r.has("islands"):
             own = true
             sim.set_physics_process(false)   # 8 разных подходов: каждому человеку свои веса и своя доля нейросети

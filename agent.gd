@@ -79,6 +79,7 @@ const PRAISE_WIN := 0.8 # сек: похвала засчитывается, т�
 var label: Label3D
 # --- коробка (задача "box"): у каждого человека своя; "хват" - мягкая притяжка к кисти, пока сеть "сжимает" (выход n_dof > 0)
 const BOX_SIZE := 0.3
+const EXTRA_IN := 6   # командные входы в конце вектора: [цель x, цель z, команда высоты, резерв, настроение A, настроение B]
 var box: RigidBody3D
 var box_on := false
 var box_init := Transform3D.IDENTITY
@@ -99,6 +100,22 @@ var sum_tw := 0.0
 var tup_last := 1.0
 # --- прыжок: сколько времени обе ступни в воздухе и на какую высоту поднимались (меньшая из двух)
 var air_steps := 0
+# --- команды и сцена новых задач (цель на земле, лежачий старт, планка, приседание)
+var tgt_on := false
+var tgt_rel := Vector2.ZERO      # цель относительно точки старта (x вбок, y вперёд)
+var tgt_world := Vector3.ZERO
+var tgt_marker: MeshInstance3D
+var bar: StaticBody3D
+var lie_mode := 0                # 0 стоит, 1 лежит на спине, 2 на животе
+var mood := Vector2.ZERO         # резерв под настроение (входы A и B)
+var tdist_last := 0.0
+var d0 := 1.0
+var tsum := 0.0
+var h_last := 0.0
+var up_last := 0.0
+var cerr_sum := 0.0
+var min_crouch := 9.0
+var crossed := false
 var peak_clear := 0.0
 
 func setup(s, i: int, pos: Vector3) -> void:
@@ -118,7 +135,7 @@ func setup(s, i: int, pos: Vector3) -> void:
     # кожа не должна исчезать из кадра: габариты меша считаются по позе покоя, а люди уходят от неё далеко
     for mi in human.find_children("*", "MeshInstance3D", true, false):
         (mi as MeshInstance3D).extra_cull_margin = 5000.0
-    n_in = 17 + n_dof
+    n_in = 17 + n_dof + EXTRA_IN
     n_out = n_dof + 3
     label = Label3D.new()
     label.billboard = BaseMaterial3D.BILLBOARD_ENABLED
@@ -382,6 +399,56 @@ func L_of(k: int) -> float:
     var i: int = b_bone[k]
     return maxf((_tail_of(i) - _world_rest(i).origin).length(), 0.03)
 
+func _cmd_h() -> float:   # приседание: 0-3 с стоим, 3-6.5 с присели до 60% роста, дальше встаём
+    var t := float(step) * dt
+    return 0.6 if (t > 3.0 and t < 6.5) else 1.0
+
+func set_scene(goal: String) -> void:
+    tgt_on = goal == "goto" or goal == "carry"
+    if tgt_on and tgt_marker == null:
+        tgt_marker = MeshInstance3D.new()
+        var cm := CylinderMesh.new()
+        cm.top_radius = 0.35
+        cm.bottom_radius = 0.35
+        cm.height = 0.03
+        var mt := StandardMaterial3D.new()
+        mt.albedo_color = Color(0.9, 0.15, 0.15)
+        cm.material = mt
+        tgt_marker.mesh = cm
+        add_child(tgt_marker)
+        tgt_marker.top_level = true
+    if tgt_marker != null:
+        tgt_marker.visible = tgt_on
+    if goal == "leap" and bar == null:
+        bar = StaticBody3D.new()
+        var cs := CollisionShape3D.new()
+        var bs := BoxShape3D.new()
+        bs.size = Vector3(1.2, 0.14, 0.1)
+        cs.shape = bs
+        bar.add_child(cs)
+        var mi := MeshInstance3D.new()
+        var bm := BoxMesh.new()
+        bm.size = bs.size
+        var mt2 := StandardMaterial3D.new()
+        mt2.albedo_color = Color(0.2, 0.4, 0.9)
+        bm.material = mt2
+        mi.mesh = bm
+        bar.add_child(mi)
+        bar.collision_layer = 1
+        bar.collision_mask = 0
+        add_child(bar)
+        bar.global_position = home + Vector3(0, 0.07, 1.2)
+    if bar != null:
+        bar.visible = goal == "leap"
+        bar.collision_layer = 1 if goal == "leap" else 0
+    _place_tgt()
+
+func _place_tgt() -> void:
+    var st: Vector3 = (b_init[root_i] as Transform3D).origin
+    tgt_world = Vector3(st.x + tgt_rel.x, 0.02, st.z + tgt_rel.y)
+    if tgt_marker != null:
+        tgt_marker.global_position = tgt_world
+
 func set_box(on: bool) -> void:
     if on and box == null:
         box = RigidBody3D.new()
@@ -421,9 +488,15 @@ func _reset_box() -> void:
 
 func _reset_body() -> void:
     _reset_box()
+    var lift := Transform3D.IDENTITY
+    if lie_mode != 0:   # лежачий старт: поворачиваем всё тело вокруг таза на спину/живот и кладём на землю
+        var pel: Vector3 = (b_init[root_i] as Transform3D).origin
+        var ang := -PI * 0.5 if lie_mode == 1 else PI * 0.5
+        lift = Transform3D(Basis(Vector3.RIGHT, ang), pel + Vector3(0, 0.16 - pel.y, 0)) * Transform3D(Basis(), -pel)
     for i in bodies.size():
+        (bodies[i] as RigidBody3D).freeze = false
         var rid: RID = bodies[i].get_rid()
-        PhysicsServer3D.body_set_state(rid, PhysicsServer3D.BODY_STATE_TRANSFORM, b_init[i])
+        PhysicsServer3D.body_set_state(rid, PhysicsServer3D.BODY_STATE_TRANSFORM, lift * (b_init[i] as Transform3D))
         PhysicsServer3D.body_set_state(rid, PhysicsServer3D.BODY_STATE_LINEAR_VELOCITY, Vector3.ZERO)
         PhysicsServer3D.body_set_state(rid, PhysicsServer3D.BODY_STATE_ANGULAR_VELOCITY, Vector3.ZERO)
 
@@ -506,6 +579,18 @@ func _sense() -> PackedFloat32Array:
         var ang: float = (jvec[k] as Vector3).dot(axis)
         var rng := maxf(maxf(absf(d_lo[i]), absf(d_hi[i])), 0.1)
         x.append(clampf(ang / rng, -1.5, 1.5))
+    # командные входы (нули, если команды нет)
+    if tgt_on:
+        var tr: Vector3 = R.inverse() * (tgt_world - rb.global_position)
+        x.append(clampf(tr.x * 0.25, -1.5, 1.5))
+        x.append(clampf(tr.z * 0.25, -1.5, 1.5))
+    else:
+        x.append(0.0)
+        x.append(0.0)
+    x.append(_cmd_h() if sim.goal == "crouch" else 0.0)
+    x.append(0.0)
+    x.append(mood.x)
+    x.append(mood.y)
     return x
 
 # один физический шаг; true - эпизод закончился
@@ -527,9 +612,18 @@ func tick() -> bool:
         tup_last = 1.0
         air_steps = 0
         peak_clear = 0.0
+        tsum = 0.0
+        h_last = 0.0
+        up_last = 0.0
+        cerr_sum = 0.0
+        min_crouch = 9.0
+        crossed = false
         held_fin = false
         box_y_fin = 0.0
         start = (b_init[root_i] as Transform3D).origin
+        _place_tgt()
+        d0 = maxf(Vector2(tgt_world.x - start.x, tgt_world.z - start.z).length(), 0.1)
+        tdist_last = d0
         return false
     var act: Array = sim.act
     var goal: String = sim.goal
@@ -605,7 +699,7 @@ func tick() -> bool:
         if goal == "jump" and not (h < 0.75 * h0 and rb.linear_velocity.y < 0.2):
             fy = 0.0   # прыжок: подвес только подхватывает при провале ниже 75% роста и никогда не тянет вниз и не держит при взлёте
         rb.apply_central_force(Vector3(0, fy, 0))
-        if lvl >= 2:
+        if lvl >= 2 and goal != "goto" and goal != "carry":
             var yaw := atan2(R.z.x, R.z.z)
             rb.apply_torque(Vector3(0, -yaw * kt * 0.5 - rb.angular_velocity.y * kt * 0.06, 0))
     if sim.auto_on and step % 60 == 0:
@@ -623,13 +717,26 @@ func tick() -> bool:
         peak_clear = maxf(peak_clear, clr)
         if clr > 0.10:
             air_steps += 1
+    h_last = h
+    up_last = R.y.y
+    if tgt_on:
+        tdist_last = Vector2(rb.global_position.x - tgt_world.x, rb.global_position.z - tgt_world.z).length()
+        tsum += exp(-tdist_last)
+    if goal == "crouch":
+        var ch := _cmd_h()
+        cerr_sum += absf(h / h0 - ch)
+        var tt := float(step) * dt
+        if tt > 4.5 and tt < 6.5:
+            min_crouch = minf(min_crouch, h / h0)
+    if goal == "leap" and rb.global_position.z > start.z + 1.5 and peak_clear > 0.1:
+        crossed = true
     sum_up += maxf(R.y.y, 0.0)
     sum_h += h
     max_h = maxf(max_h, h)
     thr += f.length()
     step += 1
     var pos := rb.global_position
-    fell = goal != "fly" and lvl < 3 and h < 0.5 * h0 and step > 40
+    fell = goal != "fly" and goal != "getup" and lvl < 3 and h < 0.5 * h0 and step > 40
     if not events.is_empty():
         _resolve_events(false)
     return step >= sim.ep_steps or fell or not pos.is_finite() or pos.length() > 400.0
@@ -700,6 +807,8 @@ func finish() -> void:
     res = score() if finite() else -100.0
     if not events.is_empty():
         _resolve_events(true)
+    for rbz in bodies:   # закончивший эпизод человек замораживается: физика не тратит на него время
+        (rbz as RigidBody3D).freeze = true
     done = true
 
 func finite() -> bool:
@@ -723,7 +832,9 @@ func score() -> float:
             kt = 6.0; kb = 3.0; kw = 0.3
         "walk":
             kt = 4.0; kb = 2.0; kw = 0.2
-        "jump", "box":
+        "run", "goto", "carry":
+            kt = 3.0; kb = 1.5; kw = 0.15
+        "jump", "box", "leap", "crouch", "getup":
             kt = 2.0; kb = 1.0; kw = 0.1
     var tpen := (kt * sum_ttilt + kb * sum_bend + kw * sum_tw) / n
     return _base_score(goal) + imit - pen - tpen
@@ -745,6 +856,22 @@ func _base_score(goal: String) -> float:
     if goal == "jump":   # награда за высоту ОБЕИХ ступней над землёй и время в воздухе (раньше платили только за подъём таза на 30 см, и между 0 и 30 см градиента не было)
         var air := clampf(float(air_steps) * dt, 0.0, 1.5)
         return 10.0 * clampf(peak_clear - 0.05, 0.0, 0.4) + 5.0 * air + upr + 0.5 * clampf(hm / h0, 0.0, 1.1) - 0.2 * ef - drift
+    if goal == "goto":
+        var dn := clampf(tdist_last / d0, 0.0, 1.5)
+        return 5.0 * (1.0 - dn) + (2.0 if tdist_last < 0.6 else 0.0) + 2.0 * tsum / n + 1.5 * upr + clampf(hm / h0, 0.0, 1.1) - 0.3 * ef
+    if goal == "getup":
+        return 6.0 * clampf(h_last / h0, 0.0, 1.1) + 4.0 * clampf(up_last, 0.0, 1.0) + 2.0 * clampf(hm / h0, 0.0, 1.1) + upr - 0.3 * ef
+    if goal == "run":
+        var airr := clampf(float(air_steps) * dt, 0.0, 2.0)
+        return 4.0 * fwd + 1.5 * upr + clampf(hm / h0, 0.0, 1.1) + airr - 0.3 * ef - 1.0 * absf(p.x - start.x)
+    if goal == "leap":
+        return 3.0 * clampf(fwd, 0.0, 3.5) + 6.0 * clampf(peak_clear - 0.05, 0.0, 0.3) + (3.0 if crossed else 0.0) + upr + 0.5 * clampf(hm / h0, 0.0, 1.1) - 0.3 * ef - 1.0 * absf(p.x - start.x)
+    if goal == "crouch":
+        return 6.0 * (1.0 - clampf(cerr_sum / n / 0.4, 0.0, 1.0)) + 2.0 * upr + (3.0 if min_crouch < 0.72 else 0.0) - 0.3 * ef
+    if goal == "carry":
+        var liftc := clampf(box_y_fin - BOX_SIZE * 0.5, 0.0, 0.3) if held_fin else 0.0
+        var dnc := clampf(tdist_last / d0, 0.0, 1.5)
+        return 1.5 * upr + 3.0 * float(held_n) / n + 8.0 * liftc + 4.0 * (1.0 - dnc) + (2.0 if (tdist_last < 0.8 and held_fin) else 0.0) - 0.3 * ef
     if goal == "fly":
         return clampf(hm, 0.0, 8.0) + 0.5 * upr - 0.2 * ef
     return 2.0 * upr + 3.0 * clampf(hm / h0, 0.0, 1.1) - 0.3 * ef - th - 0.5 * drift
