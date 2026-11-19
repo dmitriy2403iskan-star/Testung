@@ -22,7 +22,7 @@ REC_ST = {"state": "нет", "msg": "Видео ещё не запрашивал
 REC_LOCK = threading.Lock()
 REC_PROC = {"p": None, "cancel": False}
 VID_TTL = 1200   # история записей: видео живёт 20 минут, потом удаляется
-NAMES = ["stand", "walk", "jump", "box"]
+NAMES = ["stand", "walk", "jump", "box", "carry", "goto", "getup", "run", "leap", "crouch"]
 
 
 def rec_banner():
@@ -147,7 +147,7 @@ def rec_cancel():
 
 
 def rec_page(note=""):
-    opts = "".join('<option value="%s">%s</option>' % (n, t) for n, t in [("all", "Все, что уже обучается"), ("stand", "stand: стойка"), ("walk", "walk: ходьба"), ("jump", "jump: прыжки"), ("box", "box: коробка")])
+    opts = "".join('<option value="%s">%s</option>' % (n, t) for n, t in [("all", "Все, что уже обучается"), ("stand", "stand: стойка"), ("walk", "walk: ходьба"), ("jump", "jump: прыжки"), ("box", "box: коробка"), ("carry", "carry: нести коробку"), ("goto", "goto: дойти до точки"), ("getup", "getup: встать после падения"), ("run", "run: бег"), ("leap", "leap: перепрыгнуть планку"), ("crouch", "crouch: присесть и встать")])
     rows = []
     for f in sorted(glob.glob(os.path.join(kaggle_run.RES, "video_*_*.mp4")), key=os.path.getmtime, reverse=True):
         m = os.path.getmtime(f)
@@ -188,7 +188,7 @@ def status_text():
 
 
 HELP = ("Команды:\n/stop - остановить обучение (веса сохраняются, скажу где)\n/start - продолжить остановленное обучение\n"
-        "/rec stand 30 - записать видео (stand, walk, jump, box или all; секунд 5-60)\n/cancel - отменить запись видео\n"
+        "/rec stand 30 - записать видео (stand, walk, jump, box, carry, goto, getup, run, leap, crouch или all; секунд 5-60)\n/cancel - отменить запись видео\n"
         "/status - показать статус\n/help - эта подсказка")
 
 
