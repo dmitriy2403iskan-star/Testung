@@ -588,7 +588,8 @@ func _sense() -> PackedFloat32Array:
         x.append(0.0)
         x.append(0.0)
     x.append(_cmd_h() if sim.goal == "crouch" else 0.0)
-    x.append(0.0)
+    # канал «ругани»: 1, когда тело упало (наклон > ~53° или таз ниже 0.6 роста). Сеть может научиться на него реагировать
+    x.append(1.0 if (R.y.y < 0.6 or rb.global_position.y < 0.6 * h0) else 0.0)
     x.append(mood.x)
     x.append(mood.y)
     return x
