@@ -39,7 +39,7 @@ def expand(v, fill=0.0):
 
 # need - сколько из 8 людей должны стоять/справляться без подвеса 10 поколений подряд; cap_h - потолок времени на задачу
 TASKS = [
-    {"name": "stand", "gait": "ci/gait_stand.json", "ep": 8.0, "push": 35.0, "inherit": None, "need": 4, "cap_h": None, "fast": True},
+    {"name": "stand", "gait": "ci/gait_stand.json", "ep": 8.0, "push": 35.0, "inherit": None, "need": 2, "cap_h": None, "fast": True},
     {"name": "walk", "gait": "ci/gait_walk.json", "ep": 10.0, "push": 20.0, "inherit": "stand", "need": 1, "cap_h": None, "fast": True},
     {"name": "jump", "gait": "ci/gait_stand.json", "ep": 8.0, "push": 0.0, "inherit": "stand", "need": 1, "cap_h": None, "fast": True},
     {"name": "box", "gait": "ci/gait_stand.json", "ep": 10.0, "push": 0.0, "inherit": "stand", "need": 1, "cap_h": None},
@@ -51,6 +51,8 @@ TASKS = [
     {"name": "crouch", "gait": "ci/gait_stand.json", "ep": 10.0, "push": 0.0, "inherit": "stand", "need": 1, "cap_h": None},
 ]
 SUPPORTS = [3, 2, 1, 0]
+PUSH_LV = [0.4, 0.6, 0.8, 1.0]   # толчок по ступеням (доля полной силы), как подвес: освоил ступень - толчок сильнее
+MASTER_WIN, MASTER_NEED = 10, 7   # освоено: средняя модель справилась в 7 из последних 10 поколений (толчок каждый раз с новой стороны)
 LOG = []
 STOP = threading.Event()   # /stop на странице статуса
 
@@ -305,14 +307,16 @@ class Island:
         self.mean_score = 0.0
         self.fail = 0
         self.note = ""
+        self.hist = []   # успехи средней модели без подвеса за последние поколения
 
     def dump(self):
-        return {"cma": self.cma.dump(), "ema": self.ema, "master": self.master, "ok_streak": self.ok_streak, "mix": self.mix}
+        return {"cma": self.cma.dump(), "ema": self.ema, "master": self.master, "ok_streak": self.ok_streak, "mix": self.mix, "hist": self.hist}
 
     def load(self, d):
         self.cma.load(d["cma"])
         self.ema, self.master, self.ok_streak = d["ema"], d["master"], d["ok_streak"]
         self.mix = d.get("mix", self.mix)
+        self.hist = list(d.get("hist", []))
 
 
 def hhmm(t):
@@ -329,7 +333,9 @@ def old_status(st, goal, support, isl, elapsed):
     goal = goal + (" (%d)" % st["cycle"] if st.get("cycle", 0) else "")
     lines = ["Запуск в %s, сейчас %s: %s - %s = %d:%02d (потолок %d ч, по Киеву)" % (
                  hhmm(st["started"]), hhmm(now), hhmm(now), hhmm(st["started"]), elapsed // 3600, elapsed % 3600 // 60, SECS // 3600),
-             "Задача %d из %d: %s, подвес %d" % (st["task"] + 1, len(TASKS), goal, support)]
+             "Задача %d из %d: %s, подвес %d" % (st["task"] + 1, len(TASKS), goal, support)
+             + (", толчок %d%%" % int(PUSH_LV[min(st.get("plvl", 0), len(PUSH_LV) - 1)] * 100) if TASKS[st["task"]]["push"] > 0 else "")
+             + " (освоено: средняя модель справилась %d из %d последних поколений)" % (MASTER_NEED, MASTER_WIN)]
     for x in isl:
         lines.append(("№%d" % (x.i + 1) if x.i < N_MAIN else "Помощник %s" % "АБ"[x.i - N_MAIN]) + ": T=%ds %s eps=%d best=%.2f sup=%d sigma=%.3f ok=%d mastered=%d (доля сети %.2f)" % (
             elapsed, goal, st["gen"], x.last, support, x.cma.sigma, int(x.ok_top * 100), x.master, x.mix) + ("  <- " + x.note if x.note else ""))
@@ -349,6 +355,7 @@ def migrate(isl, say_):
         for k in order[-2:]:
             mains[k].cma.m = hb.cma.m.copy()
             mains[k].mix = hb.mix   # веса работают только вместе со своей долей сети
+            mains[k].hist = []
             mains[k].cma.sigma = max(hb.cma.sigma, 0.05)
             mains[k].cma.C[:] = 1.0
             mains[k].ema = hb.ema - 0.5
@@ -362,6 +369,7 @@ def migrate(isl, say_):
             continue   # только что получили знание помощника
         x.cma.m = best.cma.m + x.cma.rng.normal(0, 0.01, N_W)
         x.mix = best.mix
+        x.hist = []
         x.cma.sigma = max(best.cma.sigma, 0.05)
         x.cma.C[:] = 1.0
         x.cma.ps[:] = 0
@@ -376,6 +384,7 @@ def migrate(isl, say_):
     for h, m, mx in zip(helpers, seeds, mixes):
         h.cma.m = m
         h.mix = mx
+        h.hist = []
         h.cma.sigma = SIGMAS[h.i]
         h.cma.C[:] = 1.0
         h.cma.ps[:] = 0
@@ -405,6 +414,8 @@ def enter_task(st, isl, ti):
         h.mix = isl[0].mix
     for x in isl:
         x.ema, x.master, x.ok_streak = -1e9, 0, 0
+        x.hist = []
+    st["plvl"] = 0
     st["task"] = ti
     st["task_t0"] = time.time()
 
@@ -517,7 +528,8 @@ def main(force=False):
                 extra["lie"] = int(rng.integers(1, 3))
             if T["push"] > 0:   # толчок на 4-й секунде; направление новое каждое поколение, одно для всех в поколении
                 ang = rng.uniform(0, 2 * np.pi)
-                extra.update(push=[float(T["push"] * np.cos(ang)), float(T["push"] * np.sin(ang))], push_t=4.0)
+                pw = T["push"] * PUSH_LV[min(st.get("plvl", 0), len(PUSH_LV) - 1)]
+                extra.update(push=[float(pw * np.cos(ang)), float(pw * np.sin(ang))], push_t=4.0)
             res = pool.evaluate(goal, gait, support, st["gen"], chunks, extra)
             st["gen"] += 1
             n_ok_isl = 0
@@ -532,7 +544,11 @@ def main(force=False):
                 x.ok_top = float(ok[top].mean())
                 x.ema = x.last if x.ema < -1e8 else 0.8 * x.ema + 0.2 * x.last
                 x.ok_streak = x.ok_streak + 1 if x.ok_top >= 0.75 else 0
-                x.master = x.master + 1 if (support == 0 and ok[LAM] > 0.5) else 0
+                if support == 0:
+                    x.hist = (x.hist + [int(ok[LAM] > 0.5)])[-MASTER_WIN:]
+                else:
+                    x.hist = []
+                x.master = sum(x.hist)
                 if x.i < N_MAIN:
                     n_ok_isl += x.ok_streak >= 2
                 scold(x, goal, support, rs)
@@ -543,6 +559,7 @@ def main(force=False):
                 for x in isl[:N_MAIN]:
                     if x.fail >= 10 and x is not donor:
                         x.cma.m = donor.cma.m + x.cma.rng.normal(0, 0.01, N_W)
+                        x.hist = []
                         x.mix = donor.mix   # раньше доля сети оставалась своей (больше), и пересаженный сразу падал
                         x.cma.sigma = 0.06
                         x.cma.C[:] = 1.0
@@ -552,7 +569,7 @@ def main(force=False):
                         x.ema = donor.ema - 1.0
             st["stall"] = st.get("stall", 0) + 1 if 2 <= n_ok_isl < N_MAIN // 2 else 0
             best_i = max(range(N_MAIN), key=lambda k: isl[k].ema)
-            n_master = sum(x.master >= 10 for x in isl[:N_MAIN])
+            n_master = sum(len(x.hist) >= MASTER_WIN and x.master >= MASTER_NEED for x in isl[:N_MAIN])
             top_master = max(x.master for x in isl[:N_MAIN])
             elapsed = time.time() - st["started"]
             LOG.append("Поколение %d | %s | подвес %d | лучший остров №%d (%.2f) | прошли ступень: %d из %d | освоили: %d (нужно %d) | %.0f с" %
@@ -563,7 +580,13 @@ def main(force=False):
             in_task_h = (time.time() - st["task_t0"]) / 3600
             done_task = n_master >= T["need"]
             timeout = T["cap_h"] is not None and in_task_h > T["cap_h"]
-            if done_task or timeout:
+            if done_task and T["push"] > 0 and st.get("plvl", 0) < len(PUSH_LV) - 1:
+                st["plvl"] = st.get("plvl", 0) + 1
+                say(">>> Толчок усилен до %d%% (ступень освоили %d человек)" % (int(PUSH_LV[st["plvl"]] * 100), n_master))
+                for x in isl:
+                    x.hist = []
+                done_task = False
+            elif done_task or timeout:
                 st["skills"][goal] = {"means": [x.cma.m.tolist() for x in isl], "sup": st["sup"],
                                       "best": isl[best_i].cma.m.tolist()}
                 say(">>> Задача «%s» %s. Идём дальше." % (goal, "освоена без подвеса" if done_task else "по времени (%.1f ч), берём лучшее" % in_task_h))
